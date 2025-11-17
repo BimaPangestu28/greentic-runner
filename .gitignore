@@ -3,3 +3,4 @@
 examples/packs/*.gtpack
 !examples/packs/demo.gtpack
 .packs/
+/tests
