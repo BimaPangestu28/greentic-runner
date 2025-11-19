@@ -19,6 +19,7 @@ use crate::engine::runtime::StateMachineRuntime;
 use crate::pack::PackRuntime;
 use crate::runner::engine::FlowEngine;
 use crate::runner::mocks::MockLayer;
+use crate::secrets::{DynSecretsManager, read_secret_blocking};
 use crate::storage::session::DynSessionStore;
 use crate::storage::state::DynStateStore;
 use crate::wasi::RunnerWasiPolicy;
@@ -79,6 +80,7 @@ pub struct TenantRuntime {
     messaging_rate: Mutex<RateLimiter>,
     mocks: Option<Arc<MockLayer>>,
     timer_handles: Mutex<Vec<JoinHandle<()>>>,
+    secrets: DynSecretsManager,
 }
 
 impl TenantRuntime {
@@ -94,6 +96,7 @@ impl TenantRuntime {
         session_store: DynSessionStore,
         state_store: DynStateStore,
         state_host: Arc<dyn StateHost>,
+        secrets_manager: DynSecretsManager,
     ) -> Result<Arc<Self>> {
         let pack = Arc::new(
             PackRuntime::load(
@@ -104,6 +107,7 @@ impl TenantRuntime {
                 Some(Arc::clone(&session_store)),
                 Some(Arc::clone(&state_store)),
                 Arc::clone(&wasi_policy),
+                Arc::clone(&secrets_manager),
                 true,
             )
             .await
@@ -123,10 +127,12 @@ impl TenantRuntime {
             session_store,
             state_store,
             state_host,
+            secrets_manager,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn from_packs(
         config: Arc<HostConfig>,
         packs: Vec<(Arc<PackRuntime>, Option<String>)>,
@@ -135,6 +141,7 @@ impl TenantRuntime {
         session_store: DynSessionStore,
         _state_store: DynStateStore,
         state_host: Arc<dyn StateHost>,
+        secrets_manager: DynSecretsManager,
     ) -> Result<Arc<Self>> {
         let telegram_capacity = NonZeroUsize::new(TELEGRAM_CACHE_CAPACITY)
             .expect("telegram cache capacity must be > 0");
@@ -160,6 +167,7 @@ impl TenantRuntime {
                 session_host,
                 session_store,
                 state_host,
+                Arc::clone(&secrets_manager),
                 mocks.clone(),
             )
             .context("failed to initialise state machine runtime")?,
@@ -182,6 +190,7 @@ impl TenantRuntime {
             )),
             mocks,
             timer_handles: Mutex::new(Vec::new()),
+            secrets: secrets_manager,
         }))
     }
 
@@ -251,10 +260,10 @@ impl TenantRuntime {
         if !self.config.secrets_policy.is_allowed(key) {
             bail!("secret {key} is not permitted by bindings policy");
         }
-        if let Ok(value) = std::env::var(key) {
-            return Ok(value);
-        }
-        bail!("secret {key} not found in environment");
+        let bytes = read_secret_blocking(&self.secrets, key)
+            .context("failed to read secret from manager")?;
+        let value = String::from_utf8(bytes).context("secret value is not valid UTF-8")?;
+        Ok(value)
     }
 }
 

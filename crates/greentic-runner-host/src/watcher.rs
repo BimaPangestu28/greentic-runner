@@ -14,6 +14,7 @@ use crate::http::health::HealthState;
 use crate::pack::PackRuntime;
 use crate::runner::adapt_timer;
 use crate::runtime::{ActivePacks, TenantRuntime};
+use crate::secrets::DynSecretsManager;
 use crate::storage::session::DynSessionStore;
 use crate::storage::state::DynStateStore;
 use crate::wasi::RunnerWasiPolicy;
@@ -60,6 +61,7 @@ pub async fn start_pack_watcher(
     let state_store = host.state_store();
     let state_host = host.state_host();
     let wasi_policy = host.wasi_policy();
+    let secrets_manager = host.secrets_manager();
 
     reload_once(
         configs.as_ref(),
@@ -72,6 +74,7 @@ pub async fn start_pack_watcher(
         state_store.clone(),
         state_host.clone(),
         Arc::clone(&wasi_policy),
+        secrets_manager.clone(),
     )
     .await?;
 
@@ -83,6 +86,7 @@ pub async fn start_pack_watcher(
     let configs_clone = Arc::clone(&configs);
     let state_store_clone = Arc::clone(&state_store);
     let wasi_policy_clone = Arc::clone(&wasi_policy);
+    let secrets_manager_clone = secrets_manager.clone();
     let handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(refresh);
         loop {
@@ -105,6 +109,7 @@ pub async fn start_pack_watcher(
                 state_store_clone.clone(),
                 state_host.clone(),
                 Arc::clone(&wasi_policy_clone),
+                secrets_manager_clone.clone(),
             )
             .await
             {
@@ -131,6 +136,7 @@ async fn reload_once(
     state_store: DynStateStore,
     state_host: Arc<dyn StateHost>,
     wasi_policy: Arc<RunnerWasiPolicy>,
+    secrets_manager: DynSecretsManager,
 ) -> Result<()> {
     let index = Index::load(&cfg.index_location)?;
     let resolved = manager.resolve_all_for_index(&index)?;
@@ -150,6 +156,7 @@ async fn reload_once(
                 Some(Arc::clone(&session_store)),
                 Some(Arc::clone(&state_store)),
                 Arc::clone(&wasi_policy),
+                Arc::clone(&secrets_manager),
                 true,
             )
             .await
@@ -167,6 +174,7 @@ async fn reload_once(
                     Some(Arc::clone(&session_store)),
                     Some(Arc::clone(&state_store)),
                     Arc::clone(&wasi_policy),
+                    Arc::clone(&secrets_manager),
                     true,
                 )
                 .await
@@ -188,6 +196,7 @@ async fn reload_once(
             Arc::clone(&session_store),
             Arc::clone(&state_store),
             Arc::clone(&state_host),
+            Arc::clone(&secrets_manager),
         )
         .await?;
         let timers = adapt_timer::spawn_timers(Arc::clone(&runtime))?;

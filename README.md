@@ -22,6 +22,30 @@ curl -X POST http://localhost:8080/messaging/telegram/webhook \
 
 The host loads packs declared in `PACK_INDEX_URL`, verifies signatures/digests (via `PACK_PUBLIC_KEY` / `PACK_VERIFY_STRICT`), and exposes the built-in adapters. Every ingress payload (Telegram/WebChat/Slack/Webex/WhatsApp/webhook/timer) is normalized into the canonical schema with deterministic session keys so pause/resume + dedupe work the same way across providers.
 
+## Public API
+
+The `greentic_runner` crate is the supported embedding surface:
+
+```rust
+use greentic_runner::{run_http_host, start_embedded_host, RunnerConfig, HostBuilder};
+use greentic_runner::config::HostConfig;
+
+// Mirror the CLI
+run_http_host(RunnerConfig::from_env(vec![bindings_path])?).await?;
+
+// Or build an API-only host (no HTTP server) and drive it manually
+let host = start_embedded_host(
+    HostBuilder::new().with_config(HostConfig::load_from_path("tenant.yaml")?),
+)
+.await?;
+host.load_pack("tenant", "./packs/demo.gtpack".as_ref()).await?;
+```
+
+`run_http_host` matches the behaviour of the `greentic-runner` binary (pack
+watcher + HTTP ingress). `start_embedded_host` is designed for developer tools
+and tests that want to load packs/bindings and call `handle_activity` directly
+without starting axum or the watcher.
+
 ## Pack index schema
 
 Pack resolution is driven by a JSON index (see `examples/index.json`). Each tenant entry supplies a `main_pack` plus optional ordered `overlays`:

@@ -15,6 +15,7 @@ use crate::pack::PackRuntime;
 use crate::runner::adapt_timer;
 use crate::runner::engine::FlowEngine;
 use crate::runtime::{ActivePacks, TenantRuntime};
+use crate::secrets::{DynSecretsManager, default_manager};
 use crate::storage::{
     DynSessionStore, DynStateStore, new_session_store, new_state_store, session_host_from,
     state_host_from,
@@ -33,6 +34,7 @@ pub struct HostBuilder {
     #[cfg(feature = "telemetry")]
     telemetry: Option<TelemetryCfg>,
     wasi_policy: RunnerWasiPolicy,
+    secrets: Option<DynSecretsManager>,
 }
 
 impl HostBuilder {
@@ -42,6 +44,7 @@ impl HostBuilder {
             #[cfg(feature = "telemetry")]
             telemetry: None,
             wasi_policy: RunnerWasiPolicy::default(),
+            secrets: None,
         }
     }
 
@@ -61,6 +64,11 @@ impl HostBuilder {
         self
     }
 
+    pub fn with_secrets_manager(mut self, manager: DynSecretsManager) -> Self {
+        self.secrets = Some(manager);
+        self
+    }
+
     pub fn build(self) -> Result<RunnerHost> {
         if self.configs.is_empty() {
             bail!("at least one tenant configuration is required");
@@ -75,6 +83,7 @@ impl HostBuilder {
         let session_host = session_host_from(Arc::clone(&session_store));
         let state_store = new_state_store();
         let state_host = state_host_from(Arc::clone(&state_store));
+        let secrets = self.secrets.unwrap_or_else(default_manager);
         Ok(RunnerHost {
             configs,
             active: Arc::new(ActivePacks::new()),
@@ -84,6 +93,7 @@ impl HostBuilder {
             session_host,
             state_host,
             wasi_policy,
+            secrets_manager: secrets,
             #[cfg(feature = "telemetry")]
             telemetry: self.telemetry,
         })
@@ -106,6 +116,7 @@ pub struct RunnerHost {
     session_host: Arc<dyn SessionHost>,
     state_host: Arc<dyn StateHost>,
     wasi_policy: Arc<RunnerWasiPolicy>,
+    secrets_manager: DynSecretsManager,
     #[cfg(feature = "telemetry")]
     telemetry: Option<TelemetryCfg>,
 }
@@ -230,6 +241,10 @@ impl RunnerHost {
         Arc::clone(&self.state_host)
     }
 
+    pub fn secrets_manager(&self) -> DynSecretsManager {
+        Arc::clone(&self.secrets_manager)
+    }
+
     pub fn tenant_configs(&self) -> HashMap<String, Arc<HostConfig>> {
         self.configs.clone()
     }
@@ -262,6 +277,7 @@ impl RunnerHost {
             self.session_store(),
             self.state_store(),
             self.state_host(),
+            self.secrets_manager(),
         )
         .await?;
         let timers = adapt_timer::spawn_timers(Arc::clone(&runtime))?;

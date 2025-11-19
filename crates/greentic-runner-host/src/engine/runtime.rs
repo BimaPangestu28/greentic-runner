@@ -2,6 +2,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
+use async_trait::async_trait;
 use greentic_session::SessionData;
 use greentic_types::{
     EnvId, FlowId, GreenticError, SessionCursor as TypesSessionCursor, TenantCtx, TenantId, UserId,
@@ -14,16 +15,17 @@ use super::api::{RunFlowRequest, RunnerApi};
 use super::builder::{Runner, RunnerBuilder};
 use super::error::{GResult, RunnerError};
 use super::glue::{FnSecretsHost, FnTelemetryHost};
-use super::host::{HostBundle, SessionHost, StateHost};
+use super::host::{HostBundle, SecretsHost, SessionHost, StateHost};
 use super::policy::Policy;
 use super::registry::{Adapter, AdapterCall, AdapterRegistry};
 use super::shims::{InMemorySessionHost, InMemoryStateHost};
 use super::state_machine::{FlowDefinition, FlowStep, PAYLOAD_FROM_LAST_INPUT};
 
-use crate::config::HostConfig;
+use crate::config::{HostConfig, SecretsPolicy};
 use crate::pack::FlowDescriptor;
 use crate::runner::engine::{FlowContext, FlowEngine, FlowSnapshot, FlowStatus, FlowWait};
 use crate::runner::mocks::MockLayer;
+use crate::secrets::DynSecretsManager;
 use crate::storage::session::DynSessionStore;
 
 const DEFAULT_ENV: &str = "local";
@@ -302,19 +304,11 @@ impl StateMachineRuntime {
         session_host: Arc<dyn SessionHost>,
         session_store: DynSessionStore,
         state_host: Arc<dyn StateHost>,
+        secrets_manager: DynSecretsManager,
         mocks: Option<Arc<MockLayer>>,
     ) -> Result<Self> {
-        let secrets_cfg = Arc::clone(&config);
-        let secrets = Arc::new(FnSecretsHost::new(move |name| {
-            if !secrets_cfg.secrets_policy.is_allowed(name) {
-                return Err(RunnerError::Secrets {
-                    reason: format!("secret {name} denied by policy"),
-                });
-            }
-            std::env::var(name).map_err(|_| RunnerError::Secrets {
-                reason: format!("secret {name} unavailable"),
-            })
-        }));
+        let policy = Arc::new(config.secrets_policy.clone());
+        let secrets = Arc::new(PolicySecretsHost::new(policy, secrets_manager));
         let telemetry = Arc::new(FnTelemetryHost::new(|span, fields| {
             tracing::debug!(?span, ?fields, "telemetry emit");
             Ok(())
@@ -369,6 +363,38 @@ impl StateMachineRuntime {
             .map_err(|err| anyhow!("flow execution failed: {err}"))?;
         let outcome = result.outcome;
         Ok(outcome.get("response").cloned().unwrap_or(outcome))
+    }
+}
+
+struct PolicySecretsHost {
+    policy: Arc<SecretsPolicy>,
+    manager: DynSecretsManager,
+}
+
+impl PolicySecretsHost {
+    fn new(policy: Arc<SecretsPolicy>, manager: DynSecretsManager) -> Self {
+        Self { policy, manager }
+    }
+}
+
+#[async_trait]
+impl SecretsHost for PolicySecretsHost {
+    async fn get(&self, name: &str) -> GResult<String> {
+        if !self.policy.is_allowed(name) {
+            return Err(RunnerError::Secrets {
+                reason: format!("secret {name} denied by policy"),
+            });
+        }
+        let bytes = self
+            .manager
+            .read(name)
+            .await
+            .map_err(|err| RunnerError::Secrets {
+                reason: format!("secret {name} unavailable: {err}"),
+            })?;
+        String::from_utf8(bytes).map_err(|err| RunnerError::Secrets {
+            reason: format!("secret {name} not valid UTF-8: {err}"),
+        })
     }
 }
 

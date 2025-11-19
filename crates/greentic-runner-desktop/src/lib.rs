@@ -10,6 +10,7 @@ pub use greentic_runner_host::runner::mocks::{
     HttpMock, HttpMockMode, KvMock, MocksConfig, SecretsMock, TelemetryMock, TimeMock, ToolsMock,
 };
 use greentic_runner_host::runner::mocks::{MockEventSink, MockLayer};
+use greentic_runner_host::secrets::default_manager;
 use greentic_runner_host::storage::{new_session_store, new_state_store};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -272,6 +273,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
 
     let session_store = new_session_store();
     let state_store = new_state_store();
+    let secrets_manager = default_manager();
     let pack = Arc::new(
         PackRuntime::load(
             &component_artifact,
@@ -281,6 +283,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
             Some(Arc::clone(&session_store)),
             Some(Arc::clone(&state_store)),
             Arc::new(RunnerWasiPolicy::default()),
+            secrets_manager,
             false,
         )
         .await

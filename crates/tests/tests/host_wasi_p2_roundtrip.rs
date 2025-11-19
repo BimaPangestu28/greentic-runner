@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use greentic_runner_host::imports;
 use greentic_runner_host::pack::{ComponentState, HostState};
 use greentic_runner_host::runtime_wasmtime::{Component, Engine, Linker, Store};
+use greentic_runner_host::secrets::default_manager;
 use greentic_runner_host::{HostConfig, PreopenSpec, RunnerWasiPolicy};
 use serial_test::serial;
 use tempfile::TempDir;
@@ -60,7 +61,7 @@ fn run_component(wasm: &Path, config: Arc<HostConfig>, policy: RunnerWasiPolicy)
     let engine = Engine::default();
     let component = Component::from_file(&engine, wasm)
         .with_context(|| format!("failed to load {}", wasm.display()))?;
-    let host_state = HostState::new(Arc::clone(&config), None, None, None)?;
+    let host_state = HostState::new(Arc::clone(&config), None, None, None, default_manager())?;
     let store_state = ComponentState::new(host_state, Arc::new(policy))?;
     let mut store = Store::new(&engine, store_state);
     let mut linker = Linker::new(&engine);

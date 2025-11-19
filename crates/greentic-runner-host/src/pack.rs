@@ -18,6 +18,7 @@ use greentic_interfaces::pack_export_v0_2;
 use greentic_interfaces::pack_export_v0_2::exports::greentic::pack_export::exports::FlowInfo;
 #[cfg(feature = "mcp")]
 use greentic_mcp::{ExecConfig, ExecError, ExecRequest};
+use greentic_pack::reader::{SigningPolicy, open_pack};
 use greentic_session::SessionKey as StoreSessionKey;
 use greentic_types::{
     EnvId, FlowId, SessionCursor as StoreSessionCursor, SessionData, StateKey as StoreStateKey,
@@ -27,7 +28,7 @@ use indexmap::IndexMap;
 use reqwest::blocking::Client as BlockingClient;
 use serde::{Deserialize, Serialize};
 use serde_cbor;
-use serde_json::{self, Value, json};
+use serde_json::{self, Value};
 use serde_yaml_bw as serde_yaml;
 use tokio::fs;
 use wasmparser::{Parser, Payload};
@@ -37,10 +38,12 @@ use crate::imports;
 use crate::runner::mocks::{HttpDecision, HttpMockRequest, HttpMockResponse, MockLayer};
 
 use crate::config::HostConfig;
+use crate::secrets::{DynSecretsManager, read_secret_blocking};
 use crate::storage::state::STATE_PREFIX;
 use crate::storage::{DynSessionStore, DynStateStore};
 use crate::verify;
 use crate::wasi::RunnerWasiPolicy;
+use tracing::warn;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 pub struct PackRuntime {
@@ -50,10 +53,11 @@ pub struct PackRuntime {
     component: Option<Component>,
     metadata: PackMetadata,
     mocks: Option<Arc<MockLayer>>,
-    archive: Option<ArchiveFlows>,
+    flows: Option<PackFlows>,
     session_store: Option<DynSessionStore>,
     state_store: Option<DynStateStore>,
     wasi_policy: Arc<RunnerWasiPolicy>,
+    secrets: DynSecretsManager,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +80,7 @@ pub struct HostState {
     session_store: Option<DynSessionStore>,
     state_store: Option<DynStateStore>,
     mocks: Option<Arc<MockLayer>>,
+    secrets: DynSecretsManager,
 }
 
 impl HostState {
@@ -84,6 +89,7 @@ impl HostState {
         mocks: Option<Arc<MockLayer>>,
         session_store: Option<DynSessionStore>,
         state_store: Option<DynStateStore>,
+        secrets: DynSecretsManager,
     ) -> Result<Self> {
         let http_client = BlockingClient::builder().build()?;
         #[cfg(feature = "mcp")]
@@ -98,6 +104,7 @@ impl HostState {
             session_store,
             state_store,
             mocks,
+            secrets,
         })
     }
 
@@ -110,10 +117,10 @@ impl HostState {
         {
             return Ok(value);
         }
-        if let Ok(value) = std::env::var(key) {
-            return Ok(value);
-        }
-        bail!("secret {key} not found in environment");
+        let bytes = read_secret_blocking(&self.secrets, key)
+            .context("failed to read secret from manager")?;
+        let value = String::from_utf8(bytes).context("secret value is not valid UTF-8")?;
+        Ok(value)
     }
 
     fn tenant_ctx_from_v6(&self, ctx: Option<types::TenantCtx>) -> Result<TypesTenantCtx> {
@@ -792,6 +799,7 @@ impl PackRuntime {
         session_store: Option<DynSessionStore>,
         state_store: Option<DynStateStore>,
         wasi_policy: Arc<RunnerWasiPolicy>,
+        secrets: DynSecretsManager,
         verify_archive: bool,
     ) -> Result<Self> {
         let path = path.as_ref();
@@ -800,35 +808,54 @@ impl PackRuntime {
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.eq_ignore_ascii_case("wasm"))
             .unwrap_or(false);
-        if verify_archive && is_component {
-            if let Some(archive) = archive_source {
-                verify::verify_pack(archive).await?;
-                tracing::info!(
-                    pack_path = %archive.display(),
-                    "pack verification complete (archive)"
-                );
-            }
-        } else if verify_archive {
-            verify::verify_pack(path).await?;
-            tracing::info!(pack_path = %path.display(), "pack verification complete");
+        let archive_hint = archive_source.or(if is_component { None } else { Some(path) });
+        if verify_archive {
+            let verify_target = archive_hint.unwrap_or(path);
+            verify::verify_pack(verify_target).await?;
+            tracing::info!(pack_path = %verify_target.display(), "pack verification complete");
         }
         let engine = Engine::default();
         let wasm_bytes = fs::read(path).await?;
         let mut metadata =
             PackMetadata::from_wasm(&wasm_bytes).unwrap_or_else(|| PackMetadata::fallback(path));
-        let mut archive = None;
+        let mut flows = if let Some(archive_path) = archive_hint {
+            match PackFlows::from_archive(archive_path) {
+                Ok(cache) => {
+                    metadata = cache.metadata.clone();
+                    Some(cache)
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        pack = %archive_path.display(),
+                        "failed to parse pack flows via greentic-pack; falling back to component exports"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let component = match Component::from_file(&engine, path) {
             Ok(component) => Some(component),
             Err(err) => {
-                if let Some(archive_path) = archive_source {
-                    tracing::warn!(
+                if let Some(archive_path) = archive_hint {
+                    if flows.is_none() {
+                        let archive_data =
+                            PackFlows::from_archive(archive_path).with_context(|| {
+                                format!(
+                                    "failed to build flow cache from {}",
+                                    archive_path.display()
+                                )
+                            })?;
+                        metadata = archive_data.metadata.clone();
+                        flows = Some(archive_data);
+                    }
+                    warn!(
                         error = %err,
                         pack = %archive_path.display(),
-                        "component load failed, using manifest archive"
+                        "component load failed; continuing with cached flow metadata"
                     );
-                    let archive_data = ArchiveFlows::from_archive(archive_path)?;
-                    metadata = archive_data.metadata.clone();
-                    archive = Some(archive_data);
                     None
                 } else {
                     return Err(err);
@@ -842,16 +869,17 @@ impl PackRuntime {
             component,
             metadata,
             mocks,
-            archive,
+            flows,
             session_store,
             state_store,
             wasi_policy,
+            secrets,
         })
     }
 
     pub async fn list_flows(&self) -> Result<Vec<FlowDescriptor>> {
-        if let Some(archive) = &self.archive {
-            return Ok(archive.descriptors.clone());
+        if let Some(cache) = &self.flows {
+            return Ok(cache.descriptors.clone());
         }
         tracing::trace!(
             tenant = %self.config.tenant,
@@ -867,6 +895,7 @@ impl PackRuntime {
             self.mocks.clone(),
             self.session_store.clone(),
             self.state_store.clone(),
+            Arc::clone(&self.secrets),
         )?;
         let mut store = Store::new(
             &self.engine,
@@ -910,12 +939,12 @@ impl PackRuntime {
     }
 
     pub fn load_flow_ir(&self, flow_id: &str) -> Result<greentic_flow::ir::FlowIR> {
-        if let Some(archive) = &self.archive {
-            return archive
+        if let Some(cache) = &self.flows {
+            return cache
                 .flows
                 .get(flow_id)
                 .cloned()
-                .ok_or_else(|| anyhow!("flow '{flow_id}' not found in archive"));
+                .ok_or_else(|| anyhow!("flow '{flow_id}' not found in pack"));
         }
         let component = self
             .component
@@ -926,6 +955,7 @@ impl PackRuntime {
             self.mocks.clone(),
             self.session_store.clone(),
             self.state_store.clone(),
+            Arc::clone(&self.secrets),
         )?;
         let mut store = Store::new(
             &self.engine,
@@ -986,42 +1016,91 @@ fn map_legacy_error(err: LegacyIfaceError) -> types::IfaceError {
     }
 }
 
-struct ArchiveFlows {
+struct PackFlows {
     descriptors: Vec<FlowDescriptor>,
     flows: HashMap<String, FlowIR>,
     metadata: PackMetadata,
 }
 
-impl ArchiveFlows {
+impl PackFlows {
     fn from_archive(path: &Path) -> Result<Self> {
+        let pack = open_pack(path, SigningPolicy::DevOk)
+            .map_err(|err| anyhow!("failed to open pack {}: {}", path.display(), err.message))?;
         let file = File::open(path)
             .with_context(|| format!("failed to open archive {}", path.display()))?;
         let mut archive = ZipArchive::new(file)
             .with_context(|| format!("{} is not a valid gtpack", path.display()))?;
-        let manifest_bytes = read_entry(&mut archive, "manifest.cbor")?;
-        let manifest: greentic_pack::builder::PackManifest =
-            serde_cbor::from_slice(&manifest_bytes).context("manifest.cbor is invalid")?;
-
         let mut flows = HashMap::new();
         let mut descriptors = Vec::new();
-        for flow in &manifest.flows {
-            let ir = build_stub_flow_ir(&flow.id, &flow.kind);
-            flows.insert(flow.id.clone(), ir);
-            descriptors.push(FlowDescriptor {
-                id: flow.id.clone(),
-                flow_type: flow.kind.clone(),
-                profile: manifest.meta.name.clone(),
-                version: manifest.meta.version.to_string(),
-                description: Some(flow.kind.clone()),
-            });
+        for flow in &pack.manifest.flows {
+            match load_flow_entry(&mut archive, flow, &pack.manifest.meta) {
+                Ok((descriptor, ir)) => {
+                    flows.insert(descriptor.id.clone(), ir);
+                    descriptors.push(descriptor);
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        flow_id = flow.id,
+                        "failed to parse flow metadata from archive; using stub flow"
+                    );
+                    let stub = build_stub_flow_ir(&flow.id, &flow.kind);
+                    flows.insert(flow.id.clone(), stub.clone());
+                    descriptors.push(FlowDescriptor {
+                        id: flow.id.clone(),
+                        flow_type: flow.kind.clone(),
+                        profile: pack.manifest.meta.name.clone(),
+                        version: pack.manifest.meta.version.to_string(),
+                        description: Some(flow.kind.clone()),
+                    });
+                }
+            }
         }
 
         Ok(Self {
-            metadata: PackMetadata::from_manifest(&manifest),
+            metadata: PackMetadata::from_manifest(&pack.manifest),
             descriptors,
             flows,
         })
     }
+}
+
+fn load_flow_entry(
+    archive: &mut ZipArchive<File>,
+    entry: &greentic_pack::builder::FlowEntry,
+    meta: &greentic_pack::builder::PackMeta,
+) -> Result<(FlowDescriptor, FlowIR)> {
+    let doc = load_flow_doc(archive, entry)?;
+    let ir = greentic_flow::to_ir(doc.clone())
+        .with_context(|| format!("failed to build IR for flow {}", doc.id))?;
+    let descriptor = FlowDescriptor {
+        id: doc.id.clone(),
+        flow_type: doc.flow_type.clone(),
+        profile: meta.name.clone(),
+        version: meta.version.to_string(),
+        description: doc
+            .description
+            .clone()
+            .or(doc.title.clone())
+            .or_else(|| Some(entry.kind.clone())),
+    };
+    Ok((descriptor, ir))
+}
+
+fn load_flow_doc(
+    archive: &mut ZipArchive<File>,
+    entry: &greentic_pack::builder::FlowEntry,
+) -> Result<greentic_flow::model::FlowDoc> {
+    if let Ok(bytes) = read_entry(archive, &entry.file_yaml)
+        && let Ok(doc) = serde_yaml::from_slice(&bytes)
+    {
+        return Ok(doc);
+    }
+    let json_bytes = read_entry(archive, &entry.file_json)
+        .with_context(|| format!("missing flow document {}", entry.file_json))?;
+    let doc = serde_json::from_slice(&json_bytes)
+        .with_context(|| format!("failed to parse {}", entry.file_json))?;
+    Ok(doc)
 }
 
 fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
@@ -1031,31 +1110,6 @@ fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
     Ok(buf)
-}
-
-fn build_stub_flow_ir(flow_id: &str, flow_type: &str) -> FlowIR {
-    let mut nodes = IndexMap::new();
-    nodes.insert(
-        "complete".into(),
-        NodeIR {
-            component: "qa.process".into(),
-            payload_expr: json!({
-                "status": "done",
-                "flow_id": flow_id,
-            }),
-            routes: vec![RouteIR {
-                to: None,
-                out: true,
-            }],
-        },
-    );
-    FlowIR {
-        id: flow_id.to_string(),
-        flow_type: flow_type.to_string(),
-        start: Some("complete".into()),
-        parameters: Value::Object(Default::default()),
-        nodes,
-    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1149,6 +1203,31 @@ impl PackMetadata {
             version: manifest.meta.version.to_string(),
             entry_flows,
         }
+    }
+}
+
+fn build_stub_flow_ir(flow_id: &str, flow_type: &str) -> FlowIR {
+    let mut nodes = IndexMap::new();
+    nodes.insert(
+        "complete".into(),
+        NodeIR {
+            component: "qa.process".into(),
+            payload_expr: serde_json::json!({
+                "status": "done",
+                "flow_id": flow_id,
+            }),
+            routes: vec![RouteIR {
+                to: None,
+                out: true,
+            }],
+        },
+    );
+    FlowIR {
+        id: flow_id.to_string(),
+        flow_type: flow_type.to_string(),
+        start: Some("complete".into()),
+        parameters: Value::Object(Default::default()),
+        nodes,
     }
 }
 

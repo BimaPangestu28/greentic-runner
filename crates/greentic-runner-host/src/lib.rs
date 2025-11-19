@@ -1,11 +1,17 @@
 #![deny(unsafe_code)]
+//! Canonical Greentic host runtime.
+//!
+//! This crate owns tenant bindings, pack ingestion/watchers, ingress adapters,
+//! Wasmtime glue, session/state storage, and the HTTP server used by the
+//! `greentic-runner` CLI. Downstream crates embed it either through
+//! [`RunnerConfig`] + [`run`] (HTTP host) or [`HostBuilder`] (direct API access).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::secrets::SecretsBackend;
 use anyhow::{Context, Result, anyhow};
-use greentic_secrets::SecretsBackend;
 use runner_core::env::PackConfig;
 use tokio::signal;
 
@@ -20,6 +26,7 @@ pub mod routing;
 pub mod runner;
 pub mod runtime;
 pub mod runtime_wasmtime;
+pub mod secrets;
 pub mod storage;
 pub mod telemetry;
 pub mod verify;
@@ -103,35 +110,52 @@ fn parse_refresh_interval(value: Option<String>) -> Result<Duration> {
 
 /// Run the unified Greentic runner host until shutdown.
 pub async fn run(cfg: RunnerConfig) -> Result<()> {
+    let RunnerConfig {
+        bindings,
+        pack,
+        port,
+        refresh_interval,
+        routing,
+        admin,
+        telemetry,
+        secrets_backend,
+        wasi_policy,
+    } = cfg;
+    #[cfg(not(feature = "telemetry"))]
+    let _ = telemetry;
+
     let mut builder = HostBuilder::new();
-    for path in &cfg.bindings {
+    for path in &bindings {
         let host_config = HostConfig::load_from_path(path)
             .with_context(|| format!("failed to load host bindings {}", path.display()))?;
         builder = builder.with_config(host_config);
     }
     #[cfg(feature = "telemetry")]
-    if let Some(telemetry) = cfg.telemetry.clone() {
+    if let Some(telemetry) = telemetry.clone() {
         builder = builder.with_telemetry(telemetry);
     }
-    builder = builder.with_wasi_policy(cfg.wasi_policy.clone());
-
-    greentic_secrets::init(cfg.secrets_backend)?;
+    builder = builder
+        .with_wasi_policy(wasi_policy.clone())
+        .with_secrets_manager(
+            secrets_backend
+                .build_manager()
+                .context("failed to initialise secrets backend")?,
+        );
 
     let host = Arc::new(builder.build()?);
     host.start().await?;
 
     let (watcher, reload_handle) =
-        watcher::start_pack_watcher(Arc::clone(&host), cfg.pack.clone(), cfg.refresh_interval)
-            .await?;
+        watcher::start_pack_watcher(Arc::clone(&host), pack.clone(), refresh_interval).await?;
 
-    let routing = TenantRouting::new(cfg.routing.clone());
+    let routing = TenantRouting::new(routing.clone());
     let server = HostServer::new(
-        cfg.port,
+        port,
         host.active_packs(),
         routing,
         host.health_state(),
         Some(reload_handle),
-        cfg.admin.clone(),
+        admin.clone(),
     )?;
 
     tokio::select! {

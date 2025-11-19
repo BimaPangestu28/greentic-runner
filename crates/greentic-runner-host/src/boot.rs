@@ -1,7 +1,6 @@
 use anyhow::Result;
 #[cfg(feature = "telemetry")]
 use anyhow::anyhow;
-use greentic_secrets::{SecretsBackend, init as init_secrets_backend};
 
 use crate::TelemetryCfg;
 use crate::http::health::HealthState;
@@ -15,7 +14,6 @@ use tracing::info;
 pub fn init(health: &HealthState, otlp_cfg: Option<&TelemetryCfg>) -> Result<()> {
     init_telemetry(otlp_cfg)?;
     health.mark_telemetry_ready();
-    init_secrets()?;
     health.mark_secrets_ready();
     Ok(())
 }
@@ -52,10 +50,4 @@ fn apply_preset_from_env() {
     if let Ok(preset) = std::env::var("CLOUD_PRESET") {
         info!(preset = %preset, "telemetry preset requested");
     }
-}
-
-fn init_secrets() -> Result<()> {
-    let backend = SecretsBackend::from_env(std::env::var("SECRETS_BACKEND").ok())?;
-    init_secrets_backend(backend)?;
-    Ok(())
 }

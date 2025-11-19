@@ -11,27 +11,21 @@ readme = "../../README.md"
 keywords = ["greentic", "agent", "runner", "wasm", "mcp"]
 categories = ["wasm", "command-line-utilities", "network-programming"]
 
-[features]
-default = ["legacy-host"]
-legacy-host = []
-redis = []
-schema = []
-
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-greentic-runner-host = { path = "../greentic-runner-host", version = "0.3.6", features = ["mcp"] }
-greentic-runner-desktop = { path = "../greentic-runner-desktop", version = "0.3.6" }
+greentic-runner-host = { workspace = true, features = ["mcp"] }
+greentic-runner-desktop = { workspace = true }
 greentic-types.workspace = true
 humantime.workspace = true
-runner-core = { path = "../runner-core", version = "0.3.6" }
+runner-core = { workspace = true }
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-serde_yaml = "0.9"
-serde = { version = "1.0", features = ["derive"] }
-wasmparser = "0.90"
-url = "2"
+serde_yaml_bw.workspace = true
+serde.workspace = true
+wasmparser.workspace = true
+url.workspace = true
 
 [lib]
 name = "greentic_runner"
@@ -40,7 +34,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "greentic-runner"
 path = "src/main.rs"
-required-features = ["legacy-host"]
 
 [[bin]]
 name = "greentic-gen-bindings"
