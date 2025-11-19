@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${LOCAL_CHECK_ONLINE:=1}"
-: "${CI:=1}"
+: "${CI:=0}"
 : "${RUN_HOST:=never}"
 
 echo "==> Local CI mirror (greentic-runner)"
@@ -17,8 +17,16 @@ else
   unset CARGO_NET_OFFLINE
 fi
 
-if [[ "${CI:-}" == "1" ]]; then
+if [[ "${CI:-}" == "1" || "${CI:-}" == "true" ]]; then
   set -x
+fi
+
+if [[ -z "${LOCAL_CHECK_PACKAGE+x}" ]]; then
+  if [[ "${CI:-}" == "1" || "${CI:-}" == "true" ]]; then
+    LOCAL_CHECK_PACKAGE=0
+  else
+    LOCAL_CHECK_PACKAGE=1
+  fi
 fi
 
 echo "==> cargo fmt --check"
@@ -48,7 +56,7 @@ cargo test -p greentic-runner
 echo "==> workspace tests"
 cargo test --workspace --all-targets --all-features
 
-if [[ "${LOCAL_CHECK_PACKAGE:-1}" == "1" ]]; then
+if [[ "${LOCAL_CHECK_PACKAGE}" == "1" ]]; then
   echo "==> package dry-run (serialized)"
   if ! command -v jq >/dev/null 2>&1; then
     echo "jq not found; skipping package dry-run"
