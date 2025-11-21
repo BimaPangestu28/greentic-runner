@@ -61,11 +61,18 @@ fn run_component(wasm: &Path, config: Arc<HostConfig>, policy: RunnerWasiPolicy)
     let engine = Engine::default();
     let component = Component::from_file(&engine, wasm)
         .with_context(|| format!("failed to load {}", wasm.display()))?;
-    let host_state = HostState::new(Arc::clone(&config), None, None, None, default_manager())?;
+    let host_state = HostState::new(
+        Arc::clone(&config),
+        None,
+        None,
+        None,
+        default_manager(),
+        None,
+    )?;
     let store_state = ComponentState::new(host_state, Arc::new(policy))?;
     let mut store = Store::new(&engine, store_state);
     let mut linker = Linker::new(&engine);
-    imports::register_all(&mut linker)?;
+    imports::register_all(&mut linker, false)?;
     let instance = linker.instantiate(&mut store, &component)?;
     let run = instance
         .get_typed_func::<(), ()>(&mut store, "wasi:cli/run#run")

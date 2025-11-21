@@ -1,6 +1,4 @@
 use std::collections::{HashMap, HashSet};
-#[cfg(feature = "mcp")]
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "mcp")]
@@ -9,6 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 #[cfg(feature = "mcp")]
 use greentic_mcp::{ExecConfig, RuntimePolicy, ToolStore, VerifyPolicy};
+use greentic_oauth_host::OAuthBrokerConfig;
 use serde::Deserialize;
 use serde_yaml_bw as serde_yaml;
 
@@ -23,6 +22,7 @@ pub struct HostConfig {
     pub secrets_policy: SecretsPolicy,
     pub webhook_policy: WebhookPolicy,
     pub timers: Vec<TimerBinding>,
+    pub oauth: Option<OAuthConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,6 +35,8 @@ pub struct BindingsFile {
     pub rate_limits: RateLimits,
     #[serde(default)]
     pub timers: Vec<TimerBinding>,
+    #[serde(default)]
+    pub oauth: Option<OAuthConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +105,17 @@ pub struct TimerBinding {
     pub schedule_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct OAuthConfig {
+    pub http_base_url: String,
+    pub nats_url: String,
+    pub provider: String,
+    #[serde(default)]
+    pub env: Option<String>,
+    #[serde(default)]
+    pub team: Option<String>,
+}
+
 impl HostConfig {
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -140,6 +153,7 @@ impl HostConfig {
             secrets_policy,
             webhook_policy,
             timers: bindings.timers.clone(),
+            oauth: bindings.oauth.clone(),
         })
     }
 
@@ -156,6 +170,20 @@ impl HostConfig {
         self.mcp
             .to_exec_config(self.bindings_path.parent())
             .context("failed to build MCP exec configuration")
+    }
+
+    pub fn oauth_broker_config(&self) -> Option<OAuthBrokerConfig> {
+        let oauth = self.oauth.as_ref()?;
+        let mut cfg = OAuthBrokerConfig::new(&oauth.http_base_url, &oauth.nats_url);
+        if !oauth.provider.is_empty() {
+            cfg.default_provider = Some(oauth.provider.clone());
+        }
+        if let Some(team) = &oauth.team {
+            if !team.is_empty() {
+                cfg.team = Some(team.clone());
+            }
+        }
+        Some(cfg)
     }
 }
 
@@ -244,6 +272,57 @@ impl WebhookPolicy {
 impl TimerBinding {
     pub fn schedule_id(&self) -> &str {
         self.schedule_id.as_deref().unwrap_or(self.flow_id.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_yaml::Value;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn host_config_with_oauth(oauth: Option<OAuthConfig>) -> HostConfig {
+        HostConfig {
+            tenant: "tenant-a".to_string(),
+            bindings_path: PathBuf::from("/tmp/bindings.yaml"),
+            flow_type_bindings: HashMap::new(),
+            mcp: McpConfig {
+                store: Value::Null(None),
+                security: Value::Null(None),
+                runtime: Value::Null(None),
+                http_enabled: Some(false),
+                retry: None,
+            },
+            rate_limits: RateLimits::default(),
+            http_enabled: false,
+            secrets_policy: SecretsPolicy::allow_all(),
+            webhook_policy: WebhookPolicy::default(),
+            timers: Vec::new(),
+            oauth,
+        }
+    }
+
+    #[test]
+    fn oauth_broker_config_absent_without_block() {
+        let cfg = host_config_with_oauth(None);
+        assert!(cfg.oauth_broker_config().is_none());
+    }
+
+    #[test]
+    fn oauth_broker_config_maps_fields() {
+        let cfg = host_config_with_oauth(Some(OAuthConfig {
+            http_base_url: "https://oauth.example/".into(),
+            nats_url: "nats://broker:4222".into(),
+            provider: "demo".into(),
+            env: None,
+            team: Some("ops".into()),
+        }));
+        let broker = cfg.oauth_broker_config().expect("missing broker config");
+        assert_eq!(broker.http_base_url, "https://oauth.example/");
+        assert_eq!(broker.nats_url, "nats://broker:4222");
+        assert_eq!(broker.default_provider.as_deref(), Some("demo"));
+        assert_eq!(broker.team.as_deref(), Some("ops"));
     }
 }
 

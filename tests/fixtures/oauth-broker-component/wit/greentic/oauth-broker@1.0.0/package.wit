@@ -1,0 +1,30 @@
+package greentic:oauth-broker@1.0.0;
+
+/// Generic OAuth broker interface mirrored from the host package.
+interface brokerapi {
+  get-consent-url: func(
+    provider-id: string,
+    subject: string,
+    scopes: list<string>,
+    redirect-path: string,
+    extra-json: string,
+  ) -> string;
+
+  exchange-code: func(
+    provider-id: string,
+    subject: string,
+    code: string,
+    redirect-path: string,
+  ) -> string;
+
+  get-token: func(
+    provider-id: string,
+    subject: string,
+    scopes: list<string>,
+  ) -> string;
+}
+
+/// World that treats the broker API as an import so the host must provide it.
+world broker {
+  import brokerapi;
+}

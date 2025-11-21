@@ -85,6 +85,32 @@ Packs can emit the `session.wait` component to pause execution (e.g., waiting fo
 
 No glue code is required inside packs; authors just emit `session.wait` and persist any additional state via `greentic-state`. The canonical session key format is `{tenant}:{provider}:{conversation-or-channel}:{user}` so every adapter participates consistently (documented in `crates/greentic-runner-host/README.md`).
 
+## OAuth broker world
+
+Tenants can opt into the OAuth broker world by adding an `oauth` block to their
+bindings file. The host wires `greentic-oauth-host`, connects to the broker
+(HTTP + NATS), and exposes the WIT world
+`greentic:oauth-broker@1.0.0/world broker` to components that import it. Each
+flow execution receives the tenant’s `TenantCtx`, so deployment packs or
+channels can call `get-consent-url`, `exchange-code`, and `get-token` without
+embedding provider-specific logic.
+
+```yaml
+tenant: acme
+flow_type_bindings: { ... }
+oauth:
+  http_base_url: https://oauth.api.greentic.net/
+  nats_url: nats://oauth-broker:4222
+  provider: greentic.oauth.default
+  env: prod        # optional, defaults to GREENTIC_ENV/local
+  team: ops        # optional logical scoping hint
+```
+
+When `oauth` is omitted nothing changes—the linker simply skips the OAuth world
+and packs behave exactly as they did before. This keeps environments that do not
+run the broker lightweight while enabling deployment packs and channels to
+request consent URLs or tokens wherever the broker is configured.
+
 ## Repository layout
 
 | Path | Description |

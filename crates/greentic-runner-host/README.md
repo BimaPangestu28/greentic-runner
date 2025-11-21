@@ -70,6 +70,26 @@ During a reload the watcher resolves each locator (filesystem, HTTPS, OCI, S3, G
 
 Packs can pause mid-flow by emitting the `session.wait` component. The host persists the `FlowSnapshot` (current node pointer + execution state) into `greentic-session`. The next inbound activity for the same canonical session key (`tenant:provider:channel:conversation:user`) automatically resumes the stored snapshot, continues execution, and clears the entry when the flow completes. This makes multi-message LLM flows and human-in-the-loop approvals idempotent without bespoke session wiring.
 
+### OAuth broker integration
+
+Each tenant bindings file may optionally declare an `oauth` block:
+
+```yaml
+oauth:
+  http_base_url: https://oauth.api.greentic.net/
+  nats_url: nats://oauth-broker:4222
+  provider: greentic.oauth.default
+  env: prod        # optional, falls back to GREENTIC_ENV/local
+  team: platform   # optional logical scope
+```
+
+When present, the host wires `greentic-oauth-host`, keeps a tenant-scoped
+client configuration, and registers the `greentic:oauth-broker@1.0.0/world
+broker` WIT world in Wasmtime. Packs that import the world can ask the host for
+consent URLs, exchange codes for tokens, or fetch stored tokens, while
+environments without the block behave exactly as before (no broker world is
+wired).
+
 ## Quick start
 
 ```rust

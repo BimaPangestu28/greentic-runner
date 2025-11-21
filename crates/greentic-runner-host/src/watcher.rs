@@ -146,6 +146,7 @@ async fn reload_once(
             .get(tenant)
             .cloned()
             .with_context(|| format!("no host config registered for tenant {tenant}"))?;
+        let oauth_config = config.oauth_broker_config();
         let mut packs = Vec::new();
         let main_runtime = Arc::new(
             PackRuntime::load(
@@ -157,6 +158,7 @@ async fn reload_once(
                 Some(Arc::clone(&state_store)),
                 Arc::clone(&wasi_policy),
                 Arc::clone(&secrets_manager),
+                oauth_config.clone(),
                 true,
             )
             .await
@@ -175,6 +177,7 @@ async fn reload_once(
                     Some(Arc::clone(&state_store)),
                     Arc::clone(&wasi_policy),
                     Arc::clone(&secrets_manager),
+                    oauth_config.clone(),
                     true,
                 )
                 .await

@@ -8,16 +8,19 @@ use std::sync::Arc;
 use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable, Store, WasmResult};
 use anyhow::{Context, Result, anyhow, bail};
 use greentic_flow::ir::{FlowIR, NodeIR, RouteIR};
-use greentic_interfaces::host_import_v0_2;
-use greentic_interfaces::host_import_v0_2::greentic::host_import::imports::{
+use greentic_interfaces_host::host_import::v0_2 as host_import_v0_2;
+use greentic_interfaces_host::host_import::v0_2::greentic::host_import::imports::{
     HttpRequest as LegacyHttpRequest, HttpResponse as LegacyHttpResponse,
     IfaceError as LegacyIfaceError, TenantCtx as LegacyTenantCtx,
 };
-use greentic_interfaces::host_import_v0_6::{self, iface_types, state, types};
-use greentic_interfaces::pack_export_v0_2;
-use greentic_interfaces::pack_export_v0_2::exports::greentic::pack_export::exports::FlowInfo;
+use greentic_interfaces_host::host_import::v0_6::{
+    self as host_import_v0_6, iface_types, state, types,
+};
+use greentic_interfaces_wasmtime::pack_export_v0_2;
+use greentic_interfaces_wasmtime::pack_export_v0_2::exports::greentic::pack_export::exports::FlowInfo;
 #[cfg(feature = "mcp")]
 use greentic_mcp::{ExecConfig, ExecError, ExecRequest};
+use greentic_oauth_host::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
 use greentic_pack::reader::{SigningPolicy, open_pack};
 use greentic_session::SessionKey as StoreSessionKey;
 use greentic_types::{
@@ -58,6 +61,7 @@ pub struct PackRuntime {
     state_store: Option<DynStateStore>,
     wasi_policy: Arc<RunnerWasiPolicy>,
     secrets: DynSecretsManager,
+    oauth_config: Option<OAuthBrokerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +85,8 @@ pub struct HostState {
     state_store: Option<DynStateStore>,
     mocks: Option<Arc<MockLayer>>,
     secrets: DynSecretsManager,
+    oauth_config: Option<OAuthBrokerConfig>,
+    oauth_host: OAuthBrokerHost,
 }
 
 impl HostState {
@@ -90,6 +96,7 @@ impl HostState {
         session_store: Option<DynSessionStore>,
         state_store: Option<DynStateStore>,
         secrets: DynSecretsManager,
+        oauth_config: Option<OAuthBrokerConfig>,
     ) -> Result<Self> {
         let http_client = BlockingClient::builder().build()?;
         #[cfg(feature = "mcp")]
@@ -105,6 +112,8 @@ impl HostState {
             state_store,
             mocks,
             secrets,
+            oauth_config,
+            oauth_host: OAuthBrokerHost::default(),
         })
     }
 
@@ -219,6 +228,24 @@ impl ComponentState {
 
     fn host_mut(&mut self) -> &mut HostState {
         &mut self.host
+    }
+}
+
+impl OAuthHostContext for ComponentState {
+    fn tenant_id(&self) -> &str {
+        &self.host.config.tenant
+    }
+
+    fn env(&self) -> &str {
+        &self.host.default_env
+    }
+
+    fn oauth_broker_host(&mut self) -> &mut OAuthBrokerHost {
+        &mut self.host.oauth_host
+    }
+
+    fn oauth_config(&self) -> Option<&OAuthBrokerConfig> {
+        self.host.oauth_config.as_ref()
     }
 }
 
@@ -375,9 +402,7 @@ impl host_import_v0_6::HostImports for HostState {
             headers_json: req.headers_json,
             body: req.body,
         };
-        match greentic_interfaces::host_import_v0_2::HostImports::http_fetch(
-            self, legacy_req, None,
-        )? {
+        match host_import_v0_2::HostImports::http_fetch(self, legacy_req, None)? {
             Ok(resp) => Ok(Ok(host_import_v0_6::http::HttpResponse {
                 status: resp.status,
                 headers_json: resp.headers_json,
@@ -589,7 +614,7 @@ impl host_import_v0_6::HostImports for HostState {
     }
 }
 
-impl greentic_interfaces::host_import_v0_2::HostImports for HostState {
+impl host_import_v0_2::HostImports for HostState {
     fn secrets_get(
         &mut self,
         key: String,
@@ -800,6 +825,7 @@ impl PackRuntime {
         state_store: Option<DynStateStore>,
         wasi_policy: Arc<RunnerWasiPolicy>,
         secrets: DynSecretsManager,
+        oauth_config: Option<OAuthBrokerConfig>,
         verify_archive: bool,
     ) -> Result<Self> {
         let path = path.as_ref();
@@ -874,6 +900,7 @@ impl PackRuntime {
             state_store,
             wasi_policy,
             secrets,
+            oauth_config,
         })
     }
 
@@ -890,19 +917,21 @@ impl PackRuntime {
             .component
             .as_ref()
             .ok_or_else(|| anyhow!("pack component unavailable"))?;
+        let oauth_enabled = self.oauth_config.is_some();
         let host_state = HostState::new(
             Arc::clone(&self.config),
             self.mocks.clone(),
             self.session_store.clone(),
             self.state_store.clone(),
             Arc::clone(&self.secrets),
+            self.oauth_config.clone(),
         )?;
         let mut store = Store::new(
             &self.engine,
             ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?,
         );
         let mut linker = Linker::new(&self.engine);
-        imports::register_all(&mut linker)?;
+        imports::register_all(&mut linker, oauth_enabled)?;
         let bindings = pack_export_v0_2::PackExports::instantiate(&mut store, component, &linker)?;
         let exports = bindings.greentic_pack_export_exports();
         let flows_raw = match exports.call_list_flows(&mut store)? {
@@ -950,19 +979,21 @@ impl PackRuntime {
             .component
             .as_ref()
             .ok_or_else(|| anyhow!("pack component unavailable"))?;
+        let oauth_enabled = self.oauth_config.is_some();
         let host_state = HostState::new(
             Arc::clone(&self.config),
             self.mocks.clone(),
             self.session_store.clone(),
             self.state_store.clone(),
             Arc::clone(&self.secrets),
+            self.oauth_config.clone(),
         )?;
         let mut store = Store::new(
             &self.engine,
             ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?,
         );
         let mut linker = Linker::new(&self.engine);
-        imports::register_all(&mut linker)?;
+        imports::register_all(&mut linker, oauth_enabled)?;
         let bindings = pack_export_v0_2::PackExports::instantiate(&mut store, component, &linker)?;
         let exports = bindings.greentic_pack_export_exports();
         let flow_name = flow_id.to_string();

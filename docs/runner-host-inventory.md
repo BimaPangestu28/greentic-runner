@@ -53,11 +53,23 @@ secrets are wired today.
 - **Tenant bindings (`HostConfig::load_from_path`)**
   - Each YAML file declares `tenant`, `flow_type_bindings` (map of flow kinds to
     adapter ID + adapter config + allowed secret names), optional `rate_limits`,
-    `timers`, and an `mcp` block.
+    `timers`, an `mcp` block, and optionally an `oauth` block.
   - `McpConfig` holds the MCP store (`http-single` with `cache_dir` or
     `local-dir`), `runtime` caps (fuel, memory, wallclock/per-call timeouts,
     attempts/backoff), `security` (required digests, trusted signers,
     `require_signature`), HTTP enablement hints, and retry policy.
+  - The optional `oauth` block enables the Greentic OAuth broker integration:
+    ```yaml
+    oauth:
+      http_base_url: https://oauth.api.greentic.net/
+      nats_url: nats://oauth-broker:4222
+      provider: greentic.oauth.default
+      env: prod          # optional, falls back to GREENTIC_ENV/local
+      team: platform     # optional logical team hint
+    ```
+    When present, the runner initialises the SDK client once per tenant and
+    exposes the `greentic:oauth-broker@1.0.0/world broker` WIT world to
+    components that import it.
   - `SecretsPolicy` and `WebhookPolicy` are derived from bindings to enforce
     outbound secret usage and web-hook path allow/deny rules.
 - **Pack ingestion / watcher**
@@ -79,6 +91,9 @@ secrets are wired today.
     Teams/Bot Framework, Slack Events + Interactive, WebChat/DirectLine, Webex,
     WhatsApp Cloud, generic webhook, timers) plus `/healthz` and `/admin`
     endpoints protected by `AdminAuth`.
+    When a tenant config includes the `oauth` block, the Wasmtime linker also
+    registers the `greentic:oauth-broker@1.0.0` world, allowing deployment or
+    channel components to request consent URLs/tokens directly from the host.
   - HTTP routing is governed by `RoutingConfig::from_env`, supporting host,
     header, JWT, or fixed-tenant resolution. Admin requests require
     `ADMIN_TOKEN` unless originating from loopback.

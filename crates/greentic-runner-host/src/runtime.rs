@@ -98,6 +98,7 @@ impl TenantRuntime {
         state_host: Arc<dyn StateHost>,
         secrets_manager: DynSecretsManager,
     ) -> Result<Arc<Self>> {
+        let oauth_config = config.oauth_broker_config();
         let pack = Arc::new(
             PackRuntime::load(
                 pack_path,
@@ -108,6 +109,7 @@ impl TenantRuntime {
                 Some(Arc::clone(&state_store)),
                 Arc::clone(&wasi_policy),
                 Arc::clone(&secrets_manager),
+                oauth_config.clone(),
                 true,
             )
             .await

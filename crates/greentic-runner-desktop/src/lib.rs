@@ -284,6 +284,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
             Some(Arc::clone(&state_store)),
             Arc::new(RunnerWasiPolicy::default()),
             secrets_manager,
+            host_config.oauth_broker_config(),
             false,
         )
         .await
@@ -516,6 +517,7 @@ fn build_host_config(profile: &ResolvedProfile, dirs: &RunDirectories) -> HostCo
         secrets_policy: SecretsPolicy::allow_all(),
         webhook_policy: WebhookPolicy::default(),
         timers: Vec::new(),
+        oauth: None,
     }
 }
 
