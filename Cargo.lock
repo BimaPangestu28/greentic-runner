@@ -1616,7 +1616,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "clap",
- "greentic-interfaces 0.4.34 (registry+https://github.com/rust-lang/crates.io-index)",
+ "greentic-interfaces",
  "greentic-types",
  "indexmap 2.11.4",
  "jsonschema",
@@ -1629,21 +1629,6 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "greentic-interfaces"
-version = "0.4.34"
-dependencies = [
- "anyhow",
- "greentic-types",
- "semver",
- "thiserror 2.0.17",
- "time",
- "wasmtime",
- "wit-bindgen 0.47.0",
- "wit-bindgen-core",
- "wit-bindgen-rust",
 ]
 
 [[package]]
@@ -1666,18 +1651,22 @@ dependencies = [
 [[package]]
 name = "greentic-interfaces-host"
 version = "0.4.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1eee8750461a11ac8d19907245dc6dbc2f186042a320a32032fa6cba9b73c7cd"
 dependencies = [
- "greentic-interfaces 0.4.34",
+ "greentic-interfaces",
  "greentic-types",
 ]
 
 [[package]]
 name = "greentic-interfaces-wasmtime"
 version = "0.4.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92822829234b3341a5073e1e07f0ba6f147b8085462397a41e68fc8e1e5c65e0"
 dependencies = [
  "anyhow",
  "camino",
- "greentic-interfaces 0.4.34 (registry+https://github.com/rust-lang/crates.io-index)",
+ "greentic-interfaces",
  "proc-macro2",
  "quote",
  "syn",
@@ -1688,6 +1677,8 @@ dependencies = [
 [[package]]
 name = "greentic-oauth-core"
 version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1b18d641cc10bdc41c66d696950e53bf7a39ac5f6f09f4fa8cb631cfd17ef79"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1706,6 +1697,8 @@ dependencies = [
 [[package]]
 name = "greentic-oauth-host"
 version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f548edd19f915564b58a2b1806197575031bfc2e0b275f9fb93fa7b90b1b1b2"
 dependencies = [
  "anyhow",
  "greentic-oauth-sdk",
@@ -1719,6 +1712,8 @@ dependencies = [
 [[package]]
 name = "greentic-oauth-sdk"
 version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a88aa0c1c0254a27ae74a135f513211c6a09755db8c4919fdd162d67c3c6d2f8"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
@@ -1953,7 +1948,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ad14530ffdc85be67a50c9294e6b19c3c4a223b9e83ad5b9c0963d176963d2a"
 dependencies = [
  "dashmap",
- "greentic-interfaces 0.4.34 (registry+https://github.com/rust-lang/crates.io-index)",
+ "greentic-interfaces",
  "greentic-types",
  "parking_lot",
  "redis",
@@ -2806,7 +2801,7 @@ checksum = "b81fd9bf1ed577e2b5c2ad2c12596c1ad82e5c93cf16f2951e8eb6e1d0c5d7b5"
 dependencies = [
  "anyhow",
  "async-trait",
- "greentic-interfaces 0.4.34 (registry+https://github.com/rust-lang/crates.io-index)",
+ "greentic-interfaces",
  "greentic-types",
  "hex",
  "reqwest 0.12.24",

@@ -178,10 +178,10 @@ impl HostConfig {
         if !oauth.provider.is_empty() {
             cfg.default_provider = Some(oauth.provider.clone());
         }
-        if let Some(team) = &oauth.team {
-            if !team.is_empty() {
-                cfg.team = Some(team.clone());
-            }
+        if let Some(team) = &oauth.team
+            && !team.is_empty()
+        {
+            cfg.team = Some(team.clone());
         }
         Some(cfg)
     }
