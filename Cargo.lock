@@ -1141,7 +1141,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1423,9 +1423,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-interfaces"
-version = "0.4.44"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e83b8e64b32166619f29f40ed684b77764aac30db9d0be80208a1b9f0f41a076"
+checksum = "842552dc3505aab0f0c30cc60acfb9747c6519d78c37fe80df3affc0856525ae"
 dependencies = [
  "anyhow",
  "greentic-types",
@@ -1440,9 +1440,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-interfaces-host"
-version = "0.4.44"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "591f49b0235377a84bb012f6747367d328aa9eaaca91bc615da730599b6102bc"
+checksum = "c4ced2df2c9a44a0622251081d992b1887b974ee9273fc89ba79440a1279a274"
 dependencies = [
  "greentic-interfaces",
  "greentic-types",
@@ -1450,9 +1450,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-interfaces-wasmtime"
-version = "0.4.44"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "276b0fed75e7f5d630ddaf2c985137250a7a7a1df96e456a8322a98c065bb1fb"
+checksum = "401bd068f5879fd858e285410a85b6df61765d6a42300489afaeb82a0384d3ec"
 dependencies = [
  "anyhow",
  "camino",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-desktop"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "greentic-pack",
@@ -1540,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-host"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-tests"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2445,7 +2445,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2955,7 +2955,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3212,7 +3212,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -3276,7 +3276,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3748,7 +3748,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4704,7 +4704,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
