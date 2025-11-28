@@ -139,15 +139,13 @@ impl StateMachine {
             session.waiting = None;
         }
 
-        let mut final_outcome = None;
-        loop {
+        let outcome = loop {
             if session.cursor.position >= flow.steps.len() {
                 let outcome = session
                     .last_outcome
                     .clone()
                     .unwrap_or_else(|| json!({"status": "done"}));
-                final_outcome = Some(outcome);
-                break;
+                break outcome;
             }
 
             let step = flow
@@ -163,7 +161,7 @@ impl StateMachine {
                     let outcome = self
                         .execute_adapter_step(&flow, &mut session, call, tenant)
                         .await?;
-                    final_outcome = Some(outcome);
+                    session.last_outcome = Some(outcome.clone());
                     continue;
                 }
                 FlowStep::AwaitInput { reason } => {
@@ -186,8 +184,7 @@ impl StateMachine {
                         obj.insert("response".into(), response);
                     }
                     session.last_outcome = Some(pending.clone());
-                    final_outcome = Some(pending);
-                    break;
+                    break pending;
                 }
                 FlowStep::Complete { outcome } => {
                     session.cursor.position = flow.steps.len();
@@ -195,13 +192,13 @@ impl StateMachine {
                         "status": "done",
                         "result": outcome,
                     }));
-                    final_outcome = session.last_outcome.clone();
-                    break;
+                    break session
+                        .last_outcome
+                        .clone()
+                        .expect("complete step should set outcome");
                 }
             }
-        }
-
-        let outcome = final_outcome.expect("state machine produced no outcome");
+        };
 
         self.host
             .state
