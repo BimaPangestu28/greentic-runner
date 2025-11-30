@@ -8,6 +8,7 @@ use greentic_pack::builder::{ComponentArtifact, PackBuilder, PackMeta, Signing};
 use greentic_pack::reader::{SigningPolicy, open_pack};
 use semver::Version;
 use serde::Deserialize;
+use serde_yaml_bw as serde_yaml;
 use indexmap::IndexMap;
 use std::fs;
 use std::path::PathBuf;

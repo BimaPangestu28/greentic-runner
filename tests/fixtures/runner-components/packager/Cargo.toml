@@ -11,7 +11,7 @@ greentic-flow = "0.4"
 indexmap = "2"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+serde_yaml_bw = "2.5"
 serde_json = "1"
 time = { version = "0.3", features = ["formatting"] }
 zip = "0.6"
