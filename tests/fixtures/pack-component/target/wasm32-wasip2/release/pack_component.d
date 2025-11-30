@@ -1,1 +1,0 @@
-/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/pack-component/target/wasm32-wasip2/release/pack_component.wasm: /Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/pack-component/src/lib.rs /Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/pack-component/wit/greentic/pack-export@0.2.0/package.wit

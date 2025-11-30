@@ -1,1 +1,0 @@
-/Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/target/wasm32-wasip2/release/qa_process.wasm: /Users/maarten/Documents/GitHub/agentic/greentic-runner/tests/fixtures/runner-components/qa_process/src/lib.rs

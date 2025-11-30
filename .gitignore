@@ -1,4 +1,10 @@
 /target
+.cargo/
+
+# Fixture build outputs
+tests/fixtures/**/target/
+tests/fixtures/packs/runner-components/components/
+tests/fixtures/packs/runner-components/manifest.cbor
 .greentic
 examples/packs/*.gtpack
 !examples/packs/demo.gtpack
