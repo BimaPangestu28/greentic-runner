@@ -18,6 +18,8 @@ jobs:
       - name: Install wasm32-wasip2 target
         run: rustup target add wasm32-wasip2 --toolchain nightly
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Run local_check
         run: |
           RUN_HOST=never CI=1 bash ci/local_check.sh

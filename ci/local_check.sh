@@ -4,7 +4,6 @@ set -euo pipefail
 : "${LOCAL_CHECK_ONLINE:=1}"
 : "${CI:=0}"
 : "${RUN_HOST:=never}"
-: "${RUN_OFFLINE:=}"
 
 echo "==> Local CI mirror (greentic-runner)"
 export CARGO_TERM_COLOR=always
@@ -12,18 +11,11 @@ export RUSTFLAGS="-Dwarnings"
 export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
 ONLINE=${LOCAL_CHECK_ONLINE:-0}
-if [[ -n "${RUN_OFFLINE}" ]]; then
-  ONLINE=0
-fi
+unset CARGO_NET_OFFLINE
 
-# Always prefetch with network before enabling offline mode so new deps are cached.
 if [[ "$ONLINE" -eq 0 ]]; then
-  echo "==> Prefetching dependencies before offline run (cargo fetch --locked)"
-  unset CARGO_NET_OFFLINE
+  echo "==> Prefetching dependencies (cargo fetch --locked)"
   cargo fetch --locked
-  export CARGO_NET_OFFLINE=true
-else
-  unset CARGO_NET_OFFLINE
 fi
 
 if [[ "${CI:-}" == "1" || "${CI:-}" == "true" ]]; then
@@ -77,12 +69,6 @@ if [[ "${LOCAL_CHECK_PACKAGE}" == "1" ]]; then
       crate_dir="$(dirname "$manifest")"
       pushd "$crate_dir" >/dev/null
       if ! cargo package --no-verify --allow-dirty --quiet; then
-        if [[ "${CARGO_NET_OFFLINE:-}" == "true" ]]; then
-          echo "cargo package failed for $crate_dir while offline; skipping remaining packages"
-          skipped_package=1
-          popd >/dev/null
-          break
-        fi
         echo "package failed for $crate_dir"
         popd >/dev/null
         exit 1
