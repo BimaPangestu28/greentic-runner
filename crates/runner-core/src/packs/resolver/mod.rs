@@ -66,8 +66,8 @@ impl ResolverRegistry {
             .insert(resolver.scheme().to_string(), Arc::new(resolver));
     }
 
-    pub fn register_builtin(&mut self) -> Result<()> {
-        self.register(FsResolver::new());
+    pub fn register_builtin(&mut self, fs_root: PathBuf) -> Result<()> {
+        self.register(FsResolver::new(fs_root));
         self.register(HttpResolver::new("http")?);
         self.register(HttpResolver::new("https")?);
         self.register(OciResolver::new()?);

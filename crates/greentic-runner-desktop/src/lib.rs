@@ -13,6 +13,7 @@ use greentic_runner_host::runner::mocks::{MockEventSink, MockLayer};
 use greentic_runner_host::secrets::default_manager;
 use greentic_runner_host::storage::{new_session_store, new_state_store};
 use parking_lot::Mutex;
+use runner_core::normalize_under_root;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -219,6 +220,7 @@ pub fn desktop_defaults() -> RunOptions {
 }
 
 async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult> {
+    let pack_path = normalize_pack_path(pack_path)?;
     let resolved_profile = resolve_profile(&opts.profile, &opts.ctx);
     if let Some(otlp) = &opts.otlp {
         apply_otlp_hook(otlp);
@@ -353,6 +355,35 @@ fn apply_otlp_hook(hook: &OtlpHook) {
         headers = %hook.headers.len(),
         "OTLP hook requested (set OTEL_* env vars before invoking run_pack)"
     );
+}
+
+fn normalize_pack_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow!("pack path {} has no parent", path.display()))?;
+        let root = parent
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize {}", parent.display()))?;
+        let file = path
+            .file_name()
+            .ok_or_else(|| anyhow!("pack path {} has no file name", path.display()))?;
+        return normalize_under_root(&root, Path::new(file));
+    }
+
+    let cwd = std::env::current_dir().context("failed to resolve current directory")?;
+    let base = if let Some(parent) = path.parent() {
+        cwd.join(parent)
+    } else {
+        cwd
+    };
+    let root = base
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", base.display()))?;
+    let file = path
+        .file_name()
+        .ok_or_else(|| anyhow!("pack path {} has no file name", path.display()))?;
+    normalize_under_root(&root, Path::new(file))
 }
 
 fn prepare_run_dirs(root_override: Option<PathBuf>) -> Result<RunDirectories> {

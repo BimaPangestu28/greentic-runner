@@ -5,6 +5,7 @@ use std::{collections::HashSet, fs, path::Path};
 use url::Url;
 
 use self::component::ComponentFeatures;
+use runner_core::normalize_under_root;
 
 pub mod component;
 
@@ -71,6 +72,8 @@ pub struct McpServer {
 }
 
 pub fn load_pack(pack_dir: &Path) -> Result<PackMetadata> {
+    let cwd = std::env::current_dir().context("failed to resolve current directory")?;
+    let pack_dir = normalize_under_root(&cwd, pack_dir)?;
     if !pack_dir.is_dir() {
         anyhow::bail!("pack directory {} does not exist", pack_dir.display());
     }

@@ -5,13 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 
 use super::{PackDigest, PackEntry, PackRef, PackVersion};
-
 pub struct PackCache {
     root: PathBuf,
 }
 
 impl PackCache {
     pub fn new(root: PathBuf) -> Self {
+        let root = root.canonicalize().unwrap_or(root);
         Self { root }
     }
 

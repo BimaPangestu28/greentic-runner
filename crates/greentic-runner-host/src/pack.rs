@@ -32,6 +32,7 @@ use indexmap::IndexMap;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use reqwest::blocking::Client as BlockingClient;
+use runner_core::normalize_under_root;
 use serde::{Deserialize, Serialize};
 use serde_cbor;
 use serde_json::{self, Value};
@@ -86,6 +87,37 @@ fn build_blocking_client() -> BlockingClient {
     std::thread::spawn(|| BlockingClient::builder().build().expect("blocking client"))
         .join()
         .expect("client build thread panicked")
+}
+
+fn normalize_pack_path(path: &Path) -> Result<(PathBuf, PathBuf)> {
+    let (root, candidate) = if path.is_absolute() {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow!("pack path {} has no parent", path.display()))?;
+        let root = parent
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize {}", parent.display()))?;
+        let file = path
+            .file_name()
+            .ok_or_else(|| anyhow!("pack path {} has no file name", path.display()))?;
+        (root, PathBuf::from(file))
+    } else {
+        let cwd = std::env::current_dir().context("failed to resolve current directory")?;
+        let base = if let Some(parent) = path.parent() {
+            cwd.join(parent)
+        } else {
+            cwd
+        };
+        let root = base
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize {}", base.display()))?;
+        let file = path
+            .file_name()
+            .ok_or_else(|| anyhow!("pack path {} has no file name", path.display()))?;
+        (root, PathBuf::from(file))
+    };
+    let safe = normalize_under_root(&root, &candidate)?;
+    Ok((root, safe))
 }
 
 static HTTP_CLIENT: Lazy<Arc<BlockingClient>> = Lazy::new(|| Arc::new(build_blocking_client()));
@@ -764,21 +796,30 @@ impl PackRuntime {
         verify_archive: bool,
     ) -> Result<Self> {
         let path = path.as_ref();
-        let is_component = path
+        let (_pack_root, safe_path) = normalize_pack_path(path)?;
+        let is_component = safe_path
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.eq_ignore_ascii_case("wasm"))
             .unwrap_or(false);
-        let archive_hint = archive_source.or(if is_component { None } else { Some(path) });
+        let archive_hint_path = if let Some(source) = archive_source {
+            let (_, normalized) = normalize_pack_path(source)?;
+            Some(normalized)
+        } else if is_component {
+            None
+        } else {
+            Some(safe_path.clone())
+        };
+        let archive_hint = archive_hint_path.as_deref();
         if verify_archive {
-            let verify_target = archive_hint.unwrap_or(path);
+            let verify_target = archive_hint.unwrap_or(&safe_path);
             verify::verify_pack(verify_target).await?;
             tracing::info!(pack_path = %verify_target.display(), "pack verification complete");
         }
         let engine = Engine::default();
-        let wasm_bytes = fs::read(path).await?;
-        let mut metadata =
-            PackMetadata::from_wasm(&wasm_bytes).unwrap_or_else(|| PackMetadata::fallback(path));
+        let wasm_bytes = fs::read(&safe_path).await?;
+        let mut metadata = PackMetadata::from_wasm(&wasm_bytes)
+            .unwrap_or_else(|| PackMetadata::fallback(&safe_path));
         let mut manifest = None;
         let flows = if let Some(archive_path) = archive_hint {
             match open_pack(archive_path, SigningPolicy::DevOk) {
@@ -817,7 +858,7 @@ impl PackRuntime {
                 }
             }
         } else if is_component {
-            let name = path
+            let name = safe_path
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "component".to_string());
@@ -837,7 +878,7 @@ impl PackRuntime {
         };
         let http_client = Arc::clone(&HTTP_CLIENT);
         Ok(Self {
-            path: path.to_path_buf(),
+            path: safe_path,
             archive_path: archive_hint.map(Path::to_path_buf),
             config,
             engine,

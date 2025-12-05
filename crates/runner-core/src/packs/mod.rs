@@ -13,7 +13,7 @@ use crate::env::PackConfig;
 
 pub use cache::PackCache;
 pub use index::{Index, PackEntry, TenantRecord};
-pub use resolver::{FetchResponse, ResolverRegistry};
+pub use resolver::{FetchResponse, FsResolver, ResolverRegistry};
 pub use verify::PackVerifier;
 
 mod cache;
@@ -171,7 +171,11 @@ impl PackManager {
             .map(PackVerifier::from_env_value)
             .transpose()?;
         let mut registry = ResolverRegistry::default();
-        registry.register_builtin()?;
+        let fs_root = std::env::current_dir()
+            .context("failed to resolve current directory")?
+            .canonicalize()
+            .context("failed to canonicalize current directory")?;
+        registry.register_builtin(fs_root)?;
         Ok(Self {
             cache: PackCache::new(cfg.cache_dir.clone()),
             cfg,
