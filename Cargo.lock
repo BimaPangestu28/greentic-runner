@@ -1395,6 +1395,7 @@ dependencies = [
  "greentic-pack",
  "greentic-runner-host",
  "parking_lot",
+ "runner-core",
  "serde",
  "serde_json",
  "serde_yaml_bw",

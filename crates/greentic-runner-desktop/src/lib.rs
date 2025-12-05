@@ -235,7 +235,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
         directories.clone(),
         &resolved_profile,
         None,
-        PackMetadata::fallback(pack_path),
+        PackMetadata::fallback(&pack_path),
         opts.transcript.clone(),
     )?);
 
@@ -243,7 +243,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
     mock_layer.register_sink(mock_sink);
 
     let mut pack_load: Option<PackLoad> = None;
-    match open_pack(pack_path, to_reader_policy(opts.signing)) {
+    match open_pack(&pack_path, to_reader_policy(opts.signing)) {
         Ok(load) => {
             recorder.update_pack_metadata(PackMetadata::from_manifest(&load.manifest));
             pack_load = Some(load);
@@ -260,14 +260,14 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
 
     let host_config = Arc::new(build_host_config(&resolved_profile, &directories));
     let component_artifact =
-        resolve_component_artifact(pack_path, pack_load.as_ref(), &directories)?;
+        resolve_component_artifact(&pack_path, pack_load.as_ref(), &directories)?;
     let archive_source = if pack_path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("gtpack"))
         .unwrap_or(false)
     {
-        Some(pack_path)
+        Some(&pack_path)
     } else {
         None
     };
@@ -280,7 +280,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
             &component_artifact,
             Arc::clone(&host_config),
             Some(Arc::clone(&mock_layer)),
-            archive_source,
+            archive_source.map(|p| p as &Path),
             Some(Arc::clone(&session_store)),
             Some(Arc::clone(&state_store)),
             Arc::new(RunnerWasiPolicy::default()),
