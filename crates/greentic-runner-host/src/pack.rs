@@ -1224,9 +1224,11 @@ fn normalize_flow_doc(mut doc: FlowDoc) -> FlowDoc {
         if node.component.is_empty()
             && let Some((component_ref, payload)) = node.raw.iter().next()
         {
-            let (operation, input, config) = infer_component_exec(payload, component_ref);
+            let (target_component, operation, input, config) =
+                infer_component_exec(payload, component_ref);
             let mut payload_obj = serde_json::Map::new();
-            payload_obj.insert("component".into(), Value::String(component_ref.clone()));
+            // component.exec is meta; ensure the payload carries the actual target component.
+            payload_obj.insert("component".into(), Value::String(target_component));
             payload_obj.insert("operation".into(), Value::String(operation));
             payload_obj.insert("input".into(), input);
             if let Some(cfg) = config {
@@ -1239,7 +1241,10 @@ fn normalize_flow_doc(mut doc: FlowDoc) -> FlowDoc {
     doc
 }
 
-fn infer_component_exec(payload: &Value, component_ref: &str) -> (String, Value, Option<Value>) {
+fn infer_component_exec(
+    payload: &Value,
+    component_ref: &str,
+) -> (String, String, Value, Option<Value>) {
     let default_op = if component_ref.starts_with("templating.") {
         "render"
     } else {
@@ -1257,12 +1262,20 @@ fn infer_component_exec(payload: &Value, component_ref: &str) -> (String, Value,
 
         let mut input = map.clone();
         let config = input.remove("config");
+        let component = input
+            .get("component")
+            .or_else(|| input.get("component_ref"))
+            .and_then(Value::as_str)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| component_ref.to_string());
+        input.remove("component");
+        input.remove("component_ref");
         input.remove("op");
         input.remove("operation");
-        return (op, Value::Object(input), config);
+        return (component, op, Value::Object(input), config);
     }
 
-    (default_op, payload.clone(), None)
+    (component_ref.to_string(), default_op, payload.clone(), None)
 }
 
 #[cfg(test)]

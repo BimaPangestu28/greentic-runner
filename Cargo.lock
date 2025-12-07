@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1389,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-desktop"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "greentic-pack",
@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-host"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1439,6 +1439,7 @@ dependencies = [
  "rand 0.9.2",
  "reqwest",
  "runner-core",
+ "semver",
  "serde",
  "serde_cbor",
  "serde_json",
@@ -1461,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-tests"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2981,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "base64",
