@@ -64,6 +64,8 @@ struct HostFlowIR {
 #[derive(Clone, Debug)]
 pub struct HostNode {
     kind: NodeKind,
+    /// Backwards-compatible component label for observers/transcript.
+    pub component: String,
     payload_expr: Value,
     routes: Vec<RouteIR>,
 }
@@ -704,12 +706,20 @@ impl From<NodeIR> for HostNode {
                 component_ref: other.to_string(),
             },
         };
+        let component_label = match &kind {
+            NodeKind::Exec { .. } => "component.exec".to_string(),
+            NodeKind::PackComponent { component_ref } => component_ref.clone(),
+            NodeKind::FlowCall => "flow.call".to_string(),
+            NodeKind::BuiltinEmit { kind } => emit_ref_from_kind(kind),
+            NodeKind::Wait => "session.wait".to_string(),
+        };
         let payload_expr = match kind {
             NodeKind::BuiltinEmit { .. } => extract_emit_payload(&node.payload_expr),
             _ => node.payload_expr.clone(),
         };
         Self {
             kind,
+            component: component_label,
             payload_expr,
             routes: node.routes,
         }
@@ -744,6 +754,14 @@ fn emit_kind_from_ref(component_ref: &str) -> EmitKind {
         "emit.log" => EmitKind::Log,
         "emit.response" => EmitKind::Response,
         other => EmitKind::Other(other.to_string()),
+    }
+}
+
+fn emit_ref_from_kind(kind: &EmitKind) -> String {
+    match kind {
+        EmitKind::Log => "emit.log".to_string(),
+        EmitKind::Response => "emit.response".to_string(),
+        EmitKind::Other(other) => other.clone(),
     }
 }
 
