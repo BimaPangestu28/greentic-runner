@@ -122,6 +122,7 @@ fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
         ("templating.handlebars", "templating_handlebars"),
     ];
     let mut sources = Vec::new();
+    let workspace_target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
     for (id, crate_name) in components {
         let prebuilt = fixtures_root
             .join("components")
@@ -146,9 +147,28 @@ fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
         if !status.success() {
             anyhow::bail!("component build failed for {}", crate_name);
         }
-        let artifact = crate_dir
-            .join("target/wasm32-wasip2/release")
-            .join(format!("{crate_name}.wasm"));
+        let mut candidates = Vec::new();
+        if let Some(target_dir) = &workspace_target {
+            candidates.push(
+                target_dir
+                    .join("wasm32-wasip2/release")
+                    .join(format!("{crate_name}.wasm")),
+            );
+        }
+        candidates.push(
+            crate_dir
+                .join("target/wasm32-wasip2/release")
+                .join(format!("{crate_name}.wasm")),
+        );
+        let artifact = candidates
+            .into_iter()
+            .find(|path| path.exists())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "component artifact not found after build for {}",
+                    crate_name
+                )
+            })?;
         sources.push((id.to_string(), artifact));
     }
     Ok(sources)
