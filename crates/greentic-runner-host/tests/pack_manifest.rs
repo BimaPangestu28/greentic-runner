@@ -118,12 +118,15 @@ fn build_pack(pack_path: &Path) -> Result<()> {
 fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
     let workspace_root = workspace_root();
     let crates_root = workspace_root.join("tests/fixtures/runner-components");
+    let target_root = crates_root.join("target-test");
+
     let components = [
         ("qa.process", "qa_process"),
         ("templating.handlebars", "templating_handlebars"),
     ];
+
     let mut sources = Vec::new();
-    let workspace_target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
+
     for (id, crate_name) in components {
         let prebuilt = fixtures_root
             .join("components")
@@ -132,9 +135,12 @@ fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
             sources.push((id.to_string(), prebuilt));
             continue;
         }
+
         let crate_dir = crates_root.join(crate_name);
+
         let status = Command::new("cargo")
             .env("CARGO_NET_OFFLINE", "true")
+            .env("CARGO_TARGET_DIR", &target_root)
             .current_dir(&crate_dir)
             .args([
                 "build",
@@ -145,27 +151,17 @@ fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
             ])
             .status()
             .with_context(|| format!("failed to build component crate {}", crate_name))?;
+
         if !status.success() {
             anyhow::bail!("component build failed for {}", crate_name);
         }
-        let mut candidates = Vec::new();
-        if let Some(target_dir) = &workspace_target {
-            let base = target_dir.join("wasm32-wasip2").join("release");
-            candidates.push(base.join(format!("{crate_name}.wasm")));
-            candidates.push(base.join("deps").join(format!("{crate_name}.wasm")));
-        }
-        let ws_base = workspace_root
-            .join("target")
-            .join("wasm32-wasip2")
-            .join("release");
-        candidates.push(ws_base.join(format!("{crate_name}.wasm")));
-        candidates.push(ws_base.join("deps").join(format!("{crate_name}.wasm")));
-        let crate_base = crate_dir
-            .join("target")
-            .join("wasm32-wasip2")
-            .join("release");
-        candidates.push(crate_base.join(format!("{crate_name}.wasm")));
-        candidates.push(crate_base.join("deps").join(format!("{crate_name}.wasm")));
+
+        let base = target_root.join("wasm32-wasip2").join("release");
+        let candidates = [
+            base.join(format!("{crate_name}.wasm")),
+            base.join("deps").join(format!("{crate_name}.wasm")),
+        ];
+
         let artifact = candidates
             .into_iter()
             .find(|path| path.exists())
@@ -175,8 +171,10 @@ fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
                     crate_name
                 )
             })?;
+
         sources.push((id.to_string(), artifact));
     }
+
     Ok(sources)
 }
 
