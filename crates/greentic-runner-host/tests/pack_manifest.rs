@@ -116,7 +116,8 @@ fn build_pack(pack_path: &Path) -> Result<()> {
 }
 
 fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
-    let crates_root = workspace_root().join("tests/fixtures/runner-components");
+    let workspace_root = workspace_root();
+    let crates_root = workspace_root.join("tests/fixtures/runner-components");
     let components = [
         ("qa.process", "qa_process"),
         ("templating.handlebars", "templating_handlebars"),
@@ -155,6 +156,11 @@ fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
                     .join(format!("{crate_name}.wasm")),
             );
         }
+        candidates.push(
+            workspace_root
+                .join("target/wasm32-wasip2/release")
+                .join(format!("{crate_name}.wasm")),
+        );
         candidates.push(
             crate_dir
                 .join("target/wasm32-wasip2/release")
