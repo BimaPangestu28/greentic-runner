@@ -149,23 +149,16 @@ fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
             anyhow::bail!("component build failed for {}", crate_name);
         }
         let mut candidates = Vec::new();
-        if let Some(target_dir) = &workspace_target {
-            candidates.push(
-                target_dir
-                    .join("wasm32-wasip2/release")
-                    .join(format!("{crate_name}.wasm")),
-            );
+        let search_roots = [
+            workspace_target.as_ref(),
+            Some(&workspace_root),
+            Some(&crate_dir),
+        ];
+        for root in search_roots.into_iter().flatten() {
+            let release_root = root.join("target/wasm32-wasip2/release");
+            candidates.push(release_root.join(format!("{crate_name}.wasm")));
+            candidates.push(release_root.join("deps").join(format!("{crate_name}.wasm")));
         }
-        candidates.push(
-            workspace_root
-                .join("target/wasm32-wasip2/release")
-                .join(format!("{crate_name}.wasm")),
-        );
-        candidates.push(
-            crate_dir
-                .join("target/wasm32-wasip2/release")
-                .join(format!("{crate_name}.wasm")),
-        );
         let artifact = candidates
             .into_iter()
             .find(|path| path.exists())
