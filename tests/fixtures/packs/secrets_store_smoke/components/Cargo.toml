@@ -2,6 +2,9 @@
 name = "echo-secret"
 version = "0.0.1"
 edition = "2021"
+publish = false
+description = "Test fixture component used by secrets_store_smoke; not published"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib"]
