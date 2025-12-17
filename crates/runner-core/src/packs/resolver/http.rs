@@ -1,6 +1,6 @@
 use std::io::copy;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use greentic_config_types::{NetworkConfig, TlsMode};
 use reqwest::blocking::Client;
 use std::time::Duration;
