@@ -17,7 +17,7 @@ exclude = [
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.12"
+version = "0.4.13"
 
 [workspace.dependencies]
 arc-swap = "1.7"
@@ -37,6 +37,8 @@ greentic-state = "0.4"
 greentic-interfaces = { version = "0.4", default-features = false, features = ["bindings-rust"] }
 greentic-interfaces-host = { version = "0.4" }
 greentic-interfaces-wasmtime = { version = "0.4" }
+greentic-config = "0.4"
+greentic-config-types = "0.4"
 greentic-oauth-sdk = { version = "0.4"  }
 greentic-oauth-host = { version = "0.4" }
 greentic-runner-host = { path = "crates/greentic-runner-host", version = "0.4" }
@@ -75,7 +77,13 @@ semver = "1"
 tempfile = "3"
 tiny_http = "0.12"
 serial_test = "3"
+toml = "0.9"
 greentic-telemetry = "0.4"
 wasmtime = { version = "39", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 wasmtime-wasi = { version = "39", default-features = false, features = ["p2"] }
 jsonschema = "0.37"
+
+[profile.release.package."echo-secret"]
+# Size-tuned build for the secrets_store_smoke fixture component.
+opt-level = "z"
+strip = true

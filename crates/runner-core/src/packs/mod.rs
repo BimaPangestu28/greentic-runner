@@ -175,7 +175,7 @@ impl PackManager {
             .context("failed to resolve current directory")?
             .canonicalize()
             .context("failed to canonicalize current directory")?;
-        registry.register_builtin(fs_root)?;
+        registry.register_builtin(fs_root, cfg.network.as_ref())?;
         Ok(Self {
             cache: PackCache::new(cfg.cache_dir.clone()),
             cfg,

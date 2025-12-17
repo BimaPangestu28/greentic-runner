@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
@@ -8,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use greentic_config_types::{PackSourceConfig, PacksConfig};
 use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::watcher;
 use greentic_runner_host::{Activity, HostBuilder, HostConfig, RunnerHost};
@@ -22,6 +24,35 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 use zip::ZipWriter;
 use zip::write::FileOptions;
+
+struct EnvGuard {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: impl AsRef<str>) -> Self {
+        let prev = env::var(key).ok();
+        unsafe {
+            env::set_var(key, value.as_ref());
+        }
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(ref value) = self.prev {
+            unsafe {
+                env::set_var(self.key, value);
+            }
+        } else {
+            unsafe {
+                env::remove_var(self.key);
+            }
+        }
+    }
+}
 
 #[tokio::test]
 #[serial]
@@ -56,13 +87,9 @@ async fn host_executes_demo_pack_flow() -> Result<()> {
 #[serial]
 async fn pack_watcher_resolves_index_and_reloads() -> Result<()> {
     let cache_dir = TempDir::new()?;
-    let _source = EnvGuard::set("PACK_SOURCE", "fs");
-    let index = fixture_path("examples/index.json");
-    let _index = EnvGuard::set("PACK_INDEX_URL", index.display().to_string());
-    let _cache = EnvGuard::set("PACK_CACHE_DIR", cache_dir.path().to_string_lossy());
     let _backend_guard = EnvGuard::set("SECRETS_BACKEND", "env");
 
-    let pack_cfg = PackConfig::from_env()?;
+    let pack_cfg = pack_config_with_index(cache_dir.path(), fixture_path("examples/index.json"));
     let bindings = fixture_path("examples/bindings/default.bindings.yaml");
     let config = HostConfig::load_from_path(&bindings)?;
     let host = Arc::new(HostBuilder::new().with_config(config).build()?);
@@ -94,12 +121,9 @@ async fn pack_watcher_handles_overlays() -> Result<()> {
     let index_path = temp.path().join("index-overlay.json");
     write_overlay_index(&index_path, true)?;
 
-    let _source = EnvGuard::set("PACK_SOURCE", "fs");
-    let _index = EnvGuard::set("PACK_INDEX_URL", index_path.display().to_string());
-    let _cache = EnvGuard::set("PACK_CACHE_DIR", cache_dir.to_string_lossy());
     let _backend_guard = EnvGuard::set("SECRETS_BACKEND", "env");
 
-    let pack_cfg = PackConfig::from_env()?;
+    let pack_cfg = pack_config_with_index(cache_dir.as_path(), index_path.as_path());
     let bindings = fixture_path("examples/bindings/default.bindings.yaml");
     let config = HostConfig::load_from_path(&bindings)?;
     let host = Arc::new(HostBuilder::new().with_config(config).build()?);
@@ -144,35 +168,6 @@ async fn pack_watcher_handles_overlays() -> Result<()> {
     drop(watcher_guard);
     host.stop().await?;
     Ok(())
-}
-
-struct EnvGuard {
-    key: &'static str,
-    prev: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: impl AsRef<str>) -> Self {
-        let prev = std::env::var(key).ok();
-        unsafe {
-            std::env::set_var(key, value.as_ref());
-        }
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        if let Some(ref value) = self.prev {
-            unsafe {
-                std::env::set_var(self.key, value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
 }
 
 async fn wait_for<F>(mut predicate: F, timeout: Duration) -> Result<()>
@@ -314,6 +309,18 @@ fn write_overlay_index(path: &std::path::Path, include_overlay: bool) -> Result<
     });
     fs::write(path, serde_json::to_vec_pretty(&index)?)?;
     Ok(())
+}
+
+fn pack_config_with_index(cache_root: &Path, index: impl AsRef<Path>) -> PackConfig {
+    PackConfig::from_packs(&PacksConfig {
+        source: PackSourceConfig::LocalIndex {
+            path: index.as_ref().to_path_buf(),
+        },
+        cache_dir: cache_root.to_path_buf(),
+        index_cache_ttl_secs: None,
+        trust: None,
+    })
+    .expect("pack config")
 }
 
 fn fixture_components(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {

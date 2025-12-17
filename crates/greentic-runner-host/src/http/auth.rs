@@ -16,12 +16,10 @@ pub struct AdminAuth {
 }
 
 impl AdminAuth {
-    pub fn from_env() -> Self {
-        let token = std::env::var("ADMIN_TOKEN")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        Self { token }
+    pub fn new(token: Option<String>) -> Self {
+        Self {
+            token: token.filter(|v| !v.is_empty()),
+        }
     }
 
     fn authorize(&self, addr: SocketAddr, bearer: Option<&str>) -> Result<(), StatusCode> {
@@ -107,13 +105,13 @@ mod tests {
 
     #[test]
     fn loopback_without_token_is_allowed() {
-        let auth = AdminAuth::from_env();
+        let auth = AdminAuth::new(None);
         assert!(auth.authorize("127.0.0.1:0".parse().unwrap(), None).is_ok());
     }
 
     #[test]
     fn remote_without_token_is_forbidden() {
-        let auth = AdminAuth::default();
+        let auth = AdminAuth::new(None);
         assert_eq!(
             auth.authorize("10.0.0.1:0".parse().unwrap(), None),
             Err(StatusCode::FORBIDDEN)

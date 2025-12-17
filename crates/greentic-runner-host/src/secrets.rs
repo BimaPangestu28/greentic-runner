@@ -27,6 +27,13 @@ impl SecretsBackend {
         }
     }
 
+    pub fn from_config(cfg: &greentic_config_types::SecretsBackendRefConfig) -> Result<Self> {
+        match cfg.kind.trim().to_ascii_lowercase().as_str() {
+            "" | "none" | "env" => Ok(SecretsBackend::Env),
+            other => Err(anyhow!("unsupported secrets backend `{other}`")),
+        }
+    }
+
     pub fn build_manager(&self) -> Result<DynSecretsManager> {
         match self {
             SecretsBackend::Env => Ok(Arc::new(EnvSecretsManager) as DynSecretsManager),

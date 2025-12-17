@@ -24,9 +24,13 @@ secrets are wired today.
   runtime behaviour is driven by the re-exported host APIs and environment.
 - **CLI flags**
   - `--bindings <PATH>` (repeatable) – absolute or relative paths to tenant
-    bindings files that `RunnerConfig::from_env` loads.
-  - `--port <u16>` – overrides the HTTP port before calling
-    `greentic_runner_host::run`.
+    bindings files that the host loads.
+  - `--config <PATH>` (optional) – path to a greentic config file (TOML/JSON).
+    When omitted the resolver uses project discovery defaults.
+  - `--allow-dev` – permit dev-only config fields when resolving the config.
+  - `--config-explain` – print the resolved config (with provenance/warnings)
+    and exit.
+  - `--port <u16>` – overrides the HTTP port before calling `run`.
 - **Additional tooling** – `greentic-gen-bindings` accepts `--pack`, `--component`,
   `--out`, `--complete`, `--strict`, and `--pretty` to control pack inspection.
 
@@ -36,11 +40,11 @@ secrets are wired today.
   adapters, admin/health HTTP server, telemetry bootstrapping, and session/state
   backends.
 - **Top-level API**
-  - `RunnerConfig` encapsulates CLI/env derived settings (`bindings`, pack
-    watcher `PackConfig`, HTTP port, `RoutingConfig`, admin auth, telemetry,
-    secrets backend, `RunnerWasiPolicy`). `RunnerConfig::from_env` reads
-    `PACK_*`, `PORT`, `PACK_REFRESH_INTERVAL`, `TENANT_RESOLVER`,
-    `DEFAULT_TENANT`, `ADMIN_TOKEN`, and `SECRETS_BACKEND`.
+  - `RunnerConfig` encapsulates settings derived from a resolved greentic config
+    (`bindings`, pack watcher `PackConfig`, HTTP port, `RoutingConfig`, admin
+    auth, telemetry, secrets backend, `RunnerWasiPolicy`). `RunnerConfig::from_config`
+    accepts a `greentic_config::ResolvedConfig` and applies env overrides for
+    `PORT`, `PACK_REFRESH_INTERVAL`, `TENANT_RESOLVER`, and `DEFAULT_TENANT`.
   - `run(cfg)` orchestrates host creation, telemetry/secrets boot, pack watcher,
     HTTP server startup, and Ctrl+C shutdown.
   - `HostBuilder`/`RunnerHost` allow programmatic embedding: load tenant configs,
@@ -71,9 +75,10 @@ secrets are wired today.
   - `SecretsPolicy` and `WebhookPolicy` are derived from bindings to enforce
     outbound secret usage and web-hook path allow/deny rules.
 - **Pack ingestion / watcher**
-  - `watcher::start_pack_watcher` builds a `runner_core::PackManager`, loads the
-    JSON index from `PACK_INDEX_URL`, resolves the main pack plus overlays per
-    tenant, and spawns a hot-reload loop using `PACK_REFRESH_INTERVAL`.
+  - `watcher::start_pack_watcher` builds a `runner_core::PackManager` using the
+    greentic-config `packs`/`paths`/`network` sections, resolves the main pack
+    plus overlays per tenant, and spawns a hot-reload loop using
+    `PACK_REFRESH_INTERVAL`.
   - Reloads call `PackRuntime::load` for each pack (with the tenant’s
     `HostConfig`, optional archive metadata, and shared session/state stores).
   - Manual reloads hit `/admin/packs/reload` and use `PackReloadHandle`.
@@ -94,7 +99,8 @@ secrets are wired today.
     channel components to request consent URLs/tokens directly from the host.
   - HTTP routing is governed by `RoutingConfig::from_env`, supporting host,
     header, JWT, or fixed-tenant resolution. Admin requests require
-    `ADMIN_TOKEN` unless originating from loopback.
+    the `x-admin-token` header from the greentic-config `services.events.headers`
+    block or fall back to loopback-only access.
 - **Ingress & actions**
   - `ingress.rs` converts HTTP payloads into `Activity`/`IngressEnvelope`s with
     deterministic session keys (`{tenant}:{provider}:{conversation}:{user}`).
@@ -104,8 +110,10 @@ secrets are wired today.
     `WHATSAPP_APP_SECRET`, `SLACK_SIGNING_SECRET`, etc.) or from the secrets
     host via adapters (`TELEGRAM_BOT_TOKEN`, `WEBEX_WEBHOOK_SECRET`, etc.).
 - **Telemetry / secrets**
-  - `boot::init` wires OTLP exporters (if `telemetry` feature is enabled) and
-    `greentic_secrets::init` initialises the requested `SecretsBackend`.
+  - `boot::init` wires OTLP exporters (if the `telemetry` feature is enabled)
+    based on the greentic config’s telemetry block.
+  - Secrets backend is selected from the greentic config (`secrets.kind`;
+    currently `env`/`none`).
   - Host exposes `TelemetryCfg`/`with_telemetry` so embedders can supply OTLP
     endpoints or sampling rules.
 - **Admin + health**
@@ -119,13 +127,13 @@ secrets are wired today.
 - **Role** – shared pack ingestion utilities used by the host, including pack
   index parsing, remote fetching, signature/digest verification, and caching.
 - **Modules**
-  - `env` defines `PackConfig`, `PackSource`, and `IndexLocation`. The host reads
-    `PACK_SOURCE`, `PACK_INDEX_URL`, `PACK_CACHE_DIR`, and `PACK_PUBLIC_KEY`
-    through this API.
+  - `env` defines `PackConfig`, `PackSource`, and `IndexLocation`. The host
+    builds this from greentic-config `packs`/`paths`/`network` values (falling
+    back to `.greentic` defaults and example index when missing).
   - `packs` implements the resolver stack:
     - `PackManager` orchestrates the resolver registry (filesystem, HTTPS, OCI,
       S3, GCS, Azure blob), downloads artifacts, writes them into the cache, and
-      invokes `PackVerifier` when a public key or `PACK_VERIFY_STRICT` is set.
+      invokes `PackVerifier` when trust keys are configured.
     - `Index`/`PackEntry`/`TenantPacks` mirror the JSON index schema that maps
       tenants to `main_pack` + overlay list.
     - `ResolvedSet` is what the watcher converts into ready-to-load packs.
@@ -150,38 +158,30 @@ secrets are wired today.
 ### `greentic-secrets`
 
 - **Role** – very small helper crate that currently logs/validates secrets
-  backend choices (`Env`, `Aws`, `Gcp`, `Azure`) and exposes `init` +
-  `SecretsBackend::from_env`.
-- **Usage** – `RunnerConfig::from_env` selects a backend based on the
-  `SECRETS_BACKEND` env var and `run()` always calls `greentic_secrets::init`
-  before starting the host. Swapping in a real provider simply requires
-  extending this crate.
+  backend choices (`Env` today) and exposes `init`.
+- **Usage** – `RunnerConfig::from_config` selects a backend based on
+  the greentic-config `secrets.kind`. Swapping in a real provider simply
+  requires extending this crate.
 
 ## CLI Flags (current binaries)
 
 | Binary | Flags |
 | --- | --- |
-| `greentic-runner` | `--bindings <PATH>` (repeat per tenant bindings file), `--port <u16>` |
+| `greentic-runner` | `--bindings <PATH>` (repeat per tenant bindings file), `--config <PATH>`, `--allow-dev`, `--config-explain`, `--port <u16>` |
 | `greentic-gen-bindings` | `--pack <DIR>`, `--component <FILE>`, `--out <FILE>`, `--complete`, `--strict`, `--pretty` |
 
-All other runtime behaviour is controlled via env vars read by `RunnerConfig`,
-`RoutingConfig`, `AdminAuth`, adapters, or the watcher.
+Runtime behaviour is primarily driven by greentic-config (packs, paths, network,
+telemetry, secrets, dev defaults). Remaining env vars tweak the watcher cadence,
+port, routing, and adapter secrets.
 
 ## Environment Variables & Host Wiring
 
 | Variable | Consumed by | Purpose |
 | --- | --- | --- |
-| `PACK_SOURCE` | `runner_core::env::PackConfig` | Default resolver scheme when pack locators omit a protocol (`fs`, `http`, `oci`, `s3`, `gcs`, `azblob`). |
-| `PACK_INDEX_URL` | `PackConfig` | Points to the tenant index JSON (filesystem path, `file://`, or `http(s)://`). Required. |
-| `PACK_CACHE_DIR` | `PackConfig` | Directory for cached pack artifacts (`.packs` default). |
-| `PACK_PUBLIC_KEY` | `PackConfig` / `verify` | Enables strict signature verification; combined with `PACK_VERIFY_STRICT`. |
-| `PACK_VERIFY_STRICT` | `verify` feature | Forces `SigningPolicy::Strict` even without a public key, or relaxes enforcement when false. |
-| `PACK_REFRESH_INTERVAL` | `RunnerConfig::from_env` | Duration string for the hot-reload ticker (default `30s`). |
-| `PORT` | `RunnerConfig::from_env` | Optional override for the HTTP server port (defaults to 8080; also overridden by CLI `--port`). |
+| `PACK_REFRESH_INTERVAL` | `RunnerConfig` | Duration string for the hot-reload ticker (default `30s`). |
+| `PORT` | `RunnerConfig` | Optional override for the HTTP server port (defaults to 8080; also overridden by CLI `--port`). |
 | `TENANT_RESOLVER` | `RoutingConfig::from_env` | Chooses tenant routing strategy: `env`, `host`, `header`, or `jwt`. |
-| `DEFAULT_TENANT` | `RoutingConfig::from_env` | Fallback tenant when routing heuristics fail (`demo`). |
-| `ADMIN_TOKEN` | `AdminAuth::from_env` | Required bearer token for `/admin/*` when set; otherwise admin access is loopback-only. |
-| `SECRETS_BACKEND` | `RunnerConfig::from_env` / `greentic-secrets` | Selects `Env`, `Aws`, `Gcp`, or `Azure` placeholder. |
+| `DEFAULT_TENANT` | `RoutingConfig::from_env` | Fallback tenant when routing heuristics fail; default comes from greentic-config `dev.default_tenant` (`demo`). |
 | `GREENTIC_ENV` | `RunnerHost::handle_activity` and `FlowEngine` defaults | Marks the logical deployment environment inserted into `TenantCtx`. Defaults to `local`. |
 | `OTEL_*` (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_RESOURCE_ATTRIBUTES`, etc.) | `telemetry` feature | Standard OTLP exporter configuration for spans/metrics. |
 | Provider-specific secrets (`SLACK_SIGNING_SECRET`, `WEBEX_WEBHOOK_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`, `TELEGRAM_BOT_TOKEN`, etc.) | Adapter modules | Enable signature verification, API credentials, and message sending for the corresponding adapters. |

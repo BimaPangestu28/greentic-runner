@@ -39,6 +39,12 @@ impl HealthState {
         self.secrets_ready.store(true, Ordering::SeqCst);
     }
 
+    /// Mark all readiness checks as healthy.
+    pub fn set_ready(&self) {
+        self.mark_telemetry_ready();
+        self.mark_secrets_ready();
+    }
+
     pub fn record_reload_success(&self) {
         let mut meta = self.meta.lock();
         meta.last_reload = Some(OffsetDateTime::now_utc());

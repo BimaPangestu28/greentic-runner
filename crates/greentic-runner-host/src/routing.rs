@@ -21,7 +21,11 @@ pub struct RoutingConfig {
 
 impl RoutingConfig {
     pub fn from_env() -> Self {
-        let default_tenant = std::env::var("DEFAULT_TENANT").unwrap_or_else(|_| "demo".to_string());
+        Self::from_env_with_default("demo".into())
+    }
+
+    pub fn from_env_with_default(default_tenant: String) -> Self {
+        let default_tenant = std::env::var("DEFAULT_TENANT").unwrap_or(default_tenant);
         let resolver = std::env::var("TENANT_RESOLVER")
             .map(|value| TenantResolver::from_str(&value, &default_tenant))
             .unwrap_or(Ok(TenantResolver::Env))
@@ -32,6 +36,15 @@ impl RoutingConfig {
         Self {
             resolver,
             default_tenant,
+        }
+    }
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            resolver: TenantResolver::Env,
+            default_tenant: "demo".into(),
         }
     }
 }
@@ -208,5 +221,11 @@ mod tests {
             .into_parts();
         let tenant = routing.resolve(&parts).unwrap();
         assert_eq!(tenant, "demo");
+    }
+
+    #[test]
+    fn from_env_with_default_uses_override() {
+        let cfg = RoutingConfig::from_env_with_default("custom".into());
+        assert_eq!(cfg.default_tenant, "custom");
     }
 }

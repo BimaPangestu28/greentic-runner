@@ -66,14 +66,18 @@ impl ResolverRegistry {
             .insert(resolver.scheme().to_string(), Arc::new(resolver));
     }
 
-    pub fn register_builtin(&mut self, fs_root: PathBuf) -> Result<()> {
+    pub fn register_builtin(
+        &mut self,
+        fs_root: PathBuf,
+        network: Option<&greentic_config_types::NetworkConfig>,
+    ) -> Result<()> {
         self.register(FsResolver::new(fs_root));
-        self.register(HttpResolver::new("http")?);
-        self.register(HttpResolver::new("https")?);
-        self.register(OciResolver::new()?);
-        self.register(S3Resolver::new()?);
-        self.register(GcsResolver::new()?);
-        self.register(AzBlobResolver::new()?);
+        self.register(HttpResolver::new("http", network)?);
+        self.register(HttpResolver::new("https", network)?);
+        self.register(OciResolver::new(network)?);
+        self.register(S3Resolver::new(network)?);
+        self.register(GcsResolver::new(network)?);
+        self.register(AzBlobResolver::new(network)?);
         Ok(())
     }
 

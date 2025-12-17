@@ -16,6 +16,7 @@ tempfile.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
 greentic-types.workspace = true
+greentic-config-types.workspace = true
 jsonschema.workspace = true
 greentic-flow.workspace = true
 zip.workspace = true

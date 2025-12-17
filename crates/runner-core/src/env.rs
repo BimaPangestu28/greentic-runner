@@ -1,5 +1,5 @@
-use std::env;
-use std::path::PathBuf;
+use greentic_config_types::PathsConfig;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -12,32 +12,53 @@ pub struct PackConfig {
     pub index_location: IndexLocation,
     pub cache_dir: PathBuf,
     pub public_key: Option<String>,
+    pub network: Option<greentic_config_types::NetworkConfig>,
 }
 
 impl PackConfig {
-    /// Build a [`PackConfig`] by reading the documented PACK_* variables.
-    pub fn from_env() -> Result<Self> {
-        let source = env::var("PACK_SOURCE")
-            .ok()
-            .map(|value| PackSource::from_str(&value))
-            .transpose()?
-            .unwrap_or(PackSource::Fs);
-
-        let index_raw = env::var("PACK_INDEX_URL")
-            .context("PACK_INDEX_URL is required to locate the pack index")?;
-        let index_location = IndexLocation::from_value(&index_raw)?;
-
-        let cache_dir = env::var("PACK_CACHE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(".packs"));
-
-        let public_key = env::var("PACK_PUBLIC_KEY").ok();
-
+    /// Build a [`PackConfig`] using greentic-config paths and sensible defaults.
+    pub fn default_for_paths(paths: &PathsConfig) -> Result<Self> {
+        let cache_dir = paths.cache_dir.join("packs");
+        let default_index = paths.greentic_root.join("index.json");
+        let index_location = if default_index.exists() {
+            IndexLocation::File(default_index)
+        } else if Path::new("examples/index.json").exists() {
+            IndexLocation::File(PathBuf::from("examples/index.json"))
+        } else {
+            IndexLocation::File(default_index)
+        };
         Ok(Self {
-            source,
+            source: PackSource::Fs,
             index_location,
             cache_dir,
+            public_key: None,
+            network: None,
+        })
+    }
+
+    /// Build from the structured packs section of greentic-config.
+    pub fn from_packs(cfg: &greentic_config_types::PacksConfig) -> Result<Self> {
+        let index_location = match &cfg.source {
+            greentic_config_types::PackSourceConfig::LocalIndex { path } => {
+                IndexLocation::File(path.clone())
+            }
+            greentic_config_types::PackSourceConfig::HttpIndex { url } => {
+                IndexLocation::from_value(url)?
+            }
+            greentic_config_types::PackSourceConfig::OciRegistry { reference } => {
+                IndexLocation::from_value(reference)?
+            }
+        };
+        let public_key = cfg
+            .trust
+            .as_ref()
+            .and_then(|trust| trust.public_keys.first().cloned());
+        Ok(Self {
+            source: PackSource::Fs,
+            index_location,
+            cache_dir: cfg.cache_dir.clone(),
             public_key,
+            network: None,
         })
     }
 }

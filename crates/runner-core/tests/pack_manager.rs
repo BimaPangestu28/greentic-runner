@@ -101,6 +101,7 @@ fn build_config(index: &Path, cache_dir: &Path, source: PackSource) -> PackConfi
         index_location: IndexLocation::File(index.to_path_buf()),
         cache_dir: cache_dir.to_path_buf(),
         public_key: None,
+        network: None,
     }
 }
 

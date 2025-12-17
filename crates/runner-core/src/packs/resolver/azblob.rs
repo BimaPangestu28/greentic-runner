@@ -1,4 +1,5 @@
 use anyhow::Result;
+use greentic_config_types::NetworkConfig;
 
 use super::{FetchResponse, HttpResolver, PackResolver};
 
@@ -7,9 +8,9 @@ pub struct AzBlobResolver {
 }
 
 impl AzBlobResolver {
-    pub fn new() -> Result<Self> {
+    pub fn new(network: Option<&NetworkConfig>) -> Result<Self> {
         Ok(Self {
-            inner: HttpResolver::new("azblob")?,
+            inner: HttpResolver::new("azblob", network)?,
         })
     }
 }

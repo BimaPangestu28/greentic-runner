@@ -6,13 +6,15 @@ The workspace centres around `crates/greentic-runner-host`, which is the product
 ## Quick start
 
 ```bash
-# Configure env vars (see host README for the full table)
-export PACK_INDEX_URL=./examples/index.json
-export PACK_CACHE_DIR=.packs
-export DEFAULT_TENANT=demo
-
 # Run the HTTP host on port 8080
-cargo run -p greentic-runner -- --bindings examples/bindings/demo.yaml --port 8080
+cargo run -p greentic-runner -- \
+  --bindings examples/bindings/demo.yaml \
+  --port 8080
+
+# Optional: point at an explicit config file and print the resolved config
+cargo run -p greentic-runner -- \
+  --config examples/greentic.toml \
+  --config-explain
 
 # Trigger a Telegram-style webhook
 curl -X POST http://localhost:8080/messaging/telegram/webhook \
@@ -20,7 +22,13 @@ curl -X POST http://localhost:8080/messaging/telegram/webhook \
   -d '{"update_id":1,"message":{"chat":{"id":42},"text":"hello"}}'
 ```
 
-The host loads packs declared in `PACK_INDEX_URL`, verifies signatures/digests (via `PACK_PUBLIC_KEY` / `PACK_VERIFY_STRICT`), and exposes the built-in adapters. Every ingress payload (Telegram/WebChat/Slack/Webex/WhatsApp/webhook/timer) is normalized into the canonical schema with deterministic session keys so pause/resume + dedupe work the same way across providers.
+By default the host resolves `greentic.toml`/`greentic.json` (or the workspace
+defaults) and uses the `packs`/`paths` settings to locate the pack index
+(`.greentic/index.json` by default, falling back to `examples/index.json` for
+local runs). Network, telemetry, and secrets wiring are also taken from
+greentic-config. Every ingress payload (Telegram/WebChat/Slack/Webex/WhatsApp/
+webhook/timer) is normalized into the canonical schema with deterministic
+session keys so pause/resume + dedupe work the same way across providers.
 
 ## Public API
 
@@ -29,9 +37,11 @@ The `greentic_runner` crate is the supported embedding surface:
 ```rust
 use greentic_runner::{run_http_host, start_embedded_host, RunnerConfig, HostBuilder};
 use greentic_runner::config::HostConfig;
+use greentic_config::ConfigResolver;
 
 // Mirror the CLI
-run_http_host(RunnerConfig::from_env(vec![bindings_path])?).await?;
+let resolved = ConfigResolver::new().load()?;
+run_http_host(RunnerConfig::from_config(resolved, vec![bindings_path])?).await?;
 
 // Or build an API-only host (no HTTP server) and drive it manually
 let host = start_embedded_host(
@@ -150,11 +160,12 @@ All adapters emit the canonical payload (`tenant`, `provider`, `provider_ids`, `
 
 Common settings (full table lives in `crates/greentic-runner-host/README.md`):
 
-- `PACK_INDEX_URL`, `PACK_CACHE_DIR`, `PACK_SOURCE` – control pack discovery & caching.
 - `PACK_REFRESH_INTERVAL` – watcher cadence (e.g., `30s`, `5m`).
+- `PORT` – overrides the HTTP server port (also settable via CLI).
 - `TENANT_RESOLVER`, `DEFAULT_TENANT` – HTTP routing behaviour (host/header/jwt/env).
-- `SECRETS_BACKEND`, `OTEL_*` – bootstrap secrets + telemetry.
-- `ADMIN_TOKEN` – protect `/admin/*` endpoints; loopback-only access when unset.
+- `OTEL_*` – OTLP exporter overrides; otherwise telemetry follows greentic-config.
+- Provider secrets such as `SLACK_SIGNING_SECRET`, `WEBEX_WEBHOOK_SECRET`,
+  `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`, `TELEGRAM_BOT_TOKEN`.
 
 ## Publishing
 

@@ -1,7 +1,9 @@
 use std::io::copy;
 
 use anyhow::{Context, Result};
+use greentic_config_types::{NetworkConfig, TlsMode};
 use reqwest::blocking::Client;
+use std::time::Duration;
 use tempfile::NamedTempFile;
 
 use super::{FetchResponse, PackResolver};
@@ -12,10 +14,25 @@ pub struct HttpResolver {
 }
 
 impl HttpResolver {
-    pub fn new(scheme: &'static str) -> Result<Self> {
+    pub fn new(scheme: &'static str, network: Option<&NetworkConfig>) -> Result<Self> {
+        let mut builder = Client::builder();
+        if let Some(cfg) = network {
+            if let Some(proxy) = &cfg.proxy_url {
+                builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+            }
+            if let Some(timeout) = cfg.connect_timeout_ms {
+                builder = builder.connect_timeout(Duration::from_millis(timeout));
+            }
+            if let Some(timeout) = cfg.read_timeout_ms {
+                builder = builder.timeout(Duration::from_millis(timeout));
+            }
+            if matches!(cfg.tls_mode, TlsMode::Disabled) {
+                builder = builder.danger_accept_invalid_certs(true);
+            }
+        }
         Ok(Self {
             scheme,
-            client: Client::builder().build()?,
+            client: builder.build()?,
         })
     }
 }

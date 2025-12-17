@@ -1,9 +1,9 @@
-use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use greentic_config_types::{PackSourceConfig, PacksConfig};
 use greentic_pack::builder::{FlowBundle, PACK_VERSION, PackBuilder, PackMeta};
 use runner_core::{Index, PackConfig, PackManager};
 use semver::Version;
@@ -12,9 +12,15 @@ use tempfile::NamedTempFile;
 
 fn main() -> Result<()> {
     ensure_example_pack()?;
-    ensure_env_defaults()?;
-
-    let cfg = PackConfig::from_env()?;
+    let packs_cfg = PacksConfig {
+        source: PackSourceConfig::LocalIndex {
+            path: Path::new("./examples/index.json").to_path_buf(),
+        },
+        cache_dir: Path::new("./.packs").to_path_buf(),
+        index_cache_ttl_secs: None,
+        trust: None,
+    };
+    let cfg = PackConfig::from_packs(&packs_cfg)?;
     let index = Index::load(&cfg.index_location)?;
     let manager = PackManager::new(cfg.clone())?;
 
@@ -26,25 +32,6 @@ fn main() -> Result<()> {
             packs.main.reference.version.cache_label(),
             packs.main.path.display()
         );
-    }
-    Ok(())
-}
-
-fn ensure_env_defaults() -> Result<()> {
-    if env::var("PACK_SOURCE").is_err() {
-        unsafe {
-            env::set_var("PACK_SOURCE", "fs");
-        }
-    }
-    if env::var("PACK_INDEX_URL").is_err() {
-        unsafe {
-            env::set_var("PACK_INDEX_URL", "./examples/index.json");
-        }
-    }
-    if env::var("PACK_CACHE_DIR").is_err() {
-        unsafe {
-            env::set_var("PACK_CACHE_DIR", "./.packs");
-        }
     }
     Ok(())
 }

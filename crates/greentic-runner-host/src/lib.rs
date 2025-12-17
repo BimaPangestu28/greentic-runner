@@ -6,12 +6,20 @@
 //! `greentic-runner` CLI. Downstream crates embed it either through
 //! [`RunnerConfig`] + [`run`] (HTTP host) or [`HostBuilder`] (direct API access).
 
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::secrets::SecretsBackend;
 use anyhow::{Context, Result, anyhow};
+use greentic_config::ResolvedConfig;
+use greentic_config_types::{
+    NetworkConfig, PackSourceConfig, PacksConfig, PathsConfig, TelemetryConfig,
+    TelemetryExporterKind,
+};
+#[cfg(feature = "telemetry")]
+use greentic_telemetry::export::{ExportConfig as TelemetryExportConfig, ExportMode, Sampling};
 use runner_core::env::PackConfig;
 use tokio::signal;
 
@@ -62,23 +70,43 @@ pub struct RunnerConfig {
     pub telemetry: Option<TelemetryCfg>,
     pub secrets_backend: SecretsBackend,
     pub wasi_policy: RunnerWasiPolicy,
+    pub resolved_config: ResolvedConfig,
 }
 
 impl RunnerConfig {
-    /// Build a [`RunnerConfig`] from environment variables and the provided binding files.
-    pub fn from_env(bindings: Vec<PathBuf>) -> Result<Self> {
+    /// Build a [`RunnerConfig`] from a resolved greentic-config and the provided binding files.
+    pub fn from_config(resolved_config: ResolvedConfig, bindings: Vec<PathBuf>) -> Result<Self> {
         if bindings.is_empty() {
             anyhow::bail!("at least one bindings file is required");
         }
-        let pack = PackConfig::from_env()?;
+        let pack = pack_config_from(
+            &resolved_config.config.packs,
+            &resolved_config.config.paths,
+            &resolved_config.config.network,
+        )?;
         let refresh = parse_refresh_interval(std::env::var("PACK_REFRESH_INTERVAL").ok())?;
         let port = std::env::var("PORT")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(8080);
-        let routing = RoutingConfig::from_env();
-        let admin = AdminAuth::from_env();
-        let secrets_backend = SecretsBackend::from_env(std::env::var("SECRETS_BACKEND").ok())?;
+        let default_tenant = resolved_config
+            .config
+            .dev
+            .as_ref()
+            .map(|dev| dev.default_tenant.clone())
+            .unwrap_or_else(|| "demo".into());
+        let routing = RoutingConfig::from_env_with_default(default_tenant);
+        let paths = &resolved_config.config.paths;
+        ensure_paths_exist(paths)?;
+        let wasi_policy = default_wasi_policy(paths);
+
+        let admin = AdminAuth::new(resolved_config.config.services.as_ref().and_then(|s| {
+            s.events
+                .as_ref()
+                .and_then(|svc| svc.headers.as_ref())
+                .and_then(|headers| headers.get("x-admin-token").cloned())
+        }));
+        let secrets_backend = SecretsBackend::from_config(&resolved_config.config.secrets)?;
         Ok(Self {
             bindings,
             pack,
@@ -86,9 +114,10 @@ impl RunnerConfig {
             refresh_interval: refresh,
             routing,
             admin,
-            telemetry: None,
+            telemetry: telemetry_from(&resolved_config.config.telemetry),
             secrets_backend,
-            wasi_policy: RunnerWasiPolicy::default(),
+            wasi_policy,
+            resolved_config,
         })
     }
 
@@ -109,6 +138,93 @@ fn parse_refresh_interval(value: Option<String>) -> Result<Duration> {
     humantime::parse_duration(&raw).map_err(|err| anyhow!("invalid PACK_REFRESH_INTERVAL: {err}"))
 }
 
+fn default_wasi_policy(paths: &PathsConfig) -> RunnerWasiPolicy {
+    let mut policy = RunnerWasiPolicy::default()
+        .with_env("GREENTIC_ROOT", paths.greentic_root.display().to_string())
+        .with_env("GREENTIC_STATE_DIR", paths.state_dir.display().to_string())
+        .with_env("GREENTIC_CACHE_DIR", paths.cache_dir.display().to_string())
+        .with_env("GREENTIC_LOGS_DIR", paths.logs_dir.display().to_string());
+    policy = policy
+        .with_preopen(PreopenSpec::new(&paths.state_dir, "/state"))
+        .with_preopen(PreopenSpec::new(&paths.cache_dir, "/cache"))
+        .with_preopen(PreopenSpec::new(&paths.logs_dir, "/logs"));
+    policy
+}
+
+fn ensure_paths_exist(paths: &PathsConfig) -> Result<()> {
+    for dir in [
+        &paths.greentic_root,
+        &paths.state_dir,
+        &paths.cache_dir,
+        &paths.logs_dir,
+    ] {
+        fs::create_dir_all(dir)
+            .with_context(|| format!("failed to ensure directory {}", dir.display()))?;
+    }
+    Ok(())
+}
+
+fn pack_config_from(
+    packs: &Option<PacksConfig>,
+    paths: &PathsConfig,
+    network: &NetworkConfig,
+) -> Result<PackConfig> {
+    if let Some(cfg) = packs {
+        let cache_dir = cfg.cache_dir.clone();
+        let index_location = match &cfg.source {
+            PackSourceConfig::LocalIndex { path } => {
+                runner_core::env::IndexLocation::File(path.clone())
+            }
+            PackSourceConfig::HttpIndex { url } => {
+                runner_core::env::IndexLocation::from_value(url)?
+            }
+            PackSourceConfig::OciRegistry { reference } => {
+                runner_core::env::IndexLocation::from_value(reference)?
+            }
+        };
+        let public_key = cfg
+            .trust
+            .as_ref()
+            .and_then(|trust| trust.public_keys.first().cloned());
+        return Ok(PackConfig {
+            source: runner_core::env::PackSource::Fs,
+            index_location,
+            cache_dir,
+            public_key,
+            network: Some(network.clone()),
+        });
+    }
+    let mut cfg = PackConfig::default_for_paths(paths)?;
+    cfg.network = Some(network.clone());
+    Ok(cfg)
+}
+
+#[cfg(feature = "telemetry")]
+fn telemetry_from(cfg: &TelemetryConfig) -> Option<TelemetryCfg> {
+    if !cfg.enabled || matches!(cfg.exporter, TelemetryExporterKind::None) {
+        return None;
+    }
+    let mut export = TelemetryExportConfig::json_default();
+    export.mode = match cfg.exporter {
+        TelemetryExporterKind::Otlp => ExportMode::OtlpGrpc,
+        TelemetryExporterKind::Stdout => ExportMode::JsonStdout,
+        TelemetryExporterKind::None => return None,
+    };
+    export.endpoint = cfg.endpoint.clone();
+    export.sampling = Sampling::TraceIdRatio(cfg.sampling as f64);
+    Some(TelemetryCfg {
+        config: greentic_telemetry::TelemetryConfig {
+            service_name: "greentic-runner".into(),
+        },
+        export,
+    })
+}
+
+#[cfg(not(feature = "telemetry"))]
+fn telemetry_from(_cfg: &TelemetryConfig) -> Option<TelemetryCfg> {
+    None
+}
+
 /// Run the unified Greentic runner host until shutdown.
 pub async fn run(cfg: RunnerConfig) -> Result<()> {
     let RunnerConfig {
@@ -121,6 +237,7 @@ pub async fn run(cfg: RunnerConfig) -> Result<()> {
         telemetry,
         secrets_backend,
         wasi_policy,
+        resolved_config: _resolved_config,
     } = cfg;
     #[cfg(not(feature = "telemetry"))]
     let _ = telemetry;
