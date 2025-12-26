@@ -38,20 +38,28 @@ fn build_components() -> Result<Vec<(String, PathBuf)>> {
         ("qa.process", "qa_process"),
         ("templating.handlebars", "templating_handlebars"),
     ];
+    let offline = std::env::var("CARGO_NET_OFFLINE").ok();
     for (name, krate) in &crates {
         let manifest = workspace.join(krate).join("Cargo.toml");
-        let status = std::process::Command::new("cargo")
-            .env("CARGO_NET_OFFLINE", "true")
+        let mut cmd = std::process::Command::new("cargo");
+        if let Some(val) = &offline {
+            cmd.env("CARGO_NET_OFFLINE", val);
+        }
+        let mut args: Vec<String> = vec![
+            "build".into(),
+            "--manifest-path".into(),
+            manifest.to_str().unwrap().into(),
+            "--target".into(),
+            "wasm32-wasip2".into(),
+            "--release".into(),
+        ];
+        if matches!(offline.as_deref(), Some("true")) {
+            args.insert(1, "--offline".into());
+        }
+
+        let status = cmd
             .current_dir(&workspace)
-            .args([
-                "build",
-                "--offline",
-                "--manifest-path",
-                manifest.to_str().unwrap(),
-                "--target",
-                "wasm32-wasip2",
-                "--release",
-            ])
+            .args(args)
             .status()
             .with_context(|| format!("failed to build {krate} component"))?;
         if !status.success() {

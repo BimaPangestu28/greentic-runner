@@ -142,17 +142,24 @@ fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
 
         let crate_dir = crates_root.join(crate_name);
 
-        let status = Command::new("cargo")
-            .env("CARGO_NET_OFFLINE", "true")
+        let mut cmd = Command::new("cargo");
+        let offline = std::env::var("CARGO_NET_OFFLINE").ok();
+        if let Some(val) = &offline {
+            cmd.env("CARGO_NET_OFFLINE", val);
+        }
+        let mut args: Vec<String> = vec![
+            "build".into(),
+            "--target".into(),
+            "wasm32-wasip2".into(),
+            "--release".into(),
+        ];
+        if matches!(offline.as_deref(), Some("true")) {
+            args.insert(1, "--offline".into());
+        }
+        let status = cmd
             .env("CARGO_TARGET_DIR", &target_root)
             .current_dir(&crate_dir)
-            .args([
-                "build",
-                "--offline",
-                "--target",
-                "wasm32-wasip2",
-                "--release",
-            ])
+            .args(args)
             .status()
             .with_context(|| format!("failed to build component crate {}", crate_name))?;
 
