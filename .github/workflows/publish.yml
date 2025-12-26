@@ -2,6 +2,8 @@ name: Publish
 
 on:
   push:
+    branches:
+      - master
     tags:
       - "v*"
       - "*-v*"
@@ -98,7 +100,7 @@ jobs:
   release:
     name: GitHub Release
     needs: [crate-publish, dist]
-    if: needs.crate-publish.result == 'success' && needs.dist.result == 'success'
+    if: needs.crate-publish.result == 'success' && needs.dist.result == 'success' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
