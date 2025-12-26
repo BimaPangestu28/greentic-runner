@@ -98,6 +98,7 @@ fn build_pack(pack_path: &Path) -> Result<()> {
         capabilities: Vec::new(),
         signatures: Default::default(),
         secret_requirements: Vec::new(),
+        bootstrap: None,
     };
 
     let mut writer =

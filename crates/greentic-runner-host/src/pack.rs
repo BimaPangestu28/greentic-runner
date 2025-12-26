@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::component_api::component::greentic::component::control::Host as ComponentControlHost;
 use crate::component_api::{
@@ -13,11 +14,7 @@ use crate::oauth::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
 use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable};
 use anyhow::{Context, Result, anyhow, bail};
 use greentic_interfaces_wasmtime::host_helpers::v1::{
-    HostFns, add_all_v1_to_linker,
-    http_client::{
-        HttpClientError, HttpClientHost, Request as HttpRequest, Response as HttpResponse,
-        TenantCtx as HttpTenantCtx,
-    },
+    self as host_v1, HostFns, add_all_v1_to_linker,
     messaging_session::{
         MessagingSessionError as MessagingError, MessagingSessionHost, OpAck as MessagingAck,
         OutboundMessage, TenantCtx as MessagingTenantCtx,
@@ -35,10 +32,18 @@ use greentic_interfaces_wasmtime::host_helpers::v1::{
         TenantCtx as TelemetryTenantCtx,
     },
 };
+use greentic_interfaces_wasmtime::http_client_client_v1_0::greentic::interfaces_types::types::Impersonation as ImpersonationV1_0;
+use greentic_interfaces_wasmtime::http_client_client_v1_1::greentic::interfaces_types::types::Impersonation as ImpersonationV1_1;
 use greentic_pack::builder as legacy_pack;
 use greentic_types::{
     EnvId, Flow, StateKey as StoreStateKey, TeamId, TenantCtx as TypesTenantCtx, TenantId, UserId,
     decode_pack_manifest,
+};
+use host_v1::http_client::{
+    HttpClientError, HttpClientErrorV1_1, HttpClientHost, HttpClientHostV1_1,
+    Request as HttpRequest, RequestOptionsV1_1 as HttpRequestOptionsV1_1,
+    RequestV1_1 as HttpRequestV1_1, Response as HttpResponse, ResponseV1_1 as HttpResponseV1_1,
+    TenantCtx as HttpTenantCtx, TenantCtxV1_1 as HttpTenantCtxV1_1,
 };
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -248,32 +253,11 @@ impl HostState {
         }
         Ok(tenant_ctx)
     }
-}
 
-impl SecretsStoreHost for HostState {
-    fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, SecretsError> {
-        if !self.config.secrets_policy.is_allowed(&key) {
-            return Err(SecretsError::Denied);
-        }
-        if let Some(mock) = &self.mocks
-            && let Some(value) = mock.secrets_lookup(&key)
-        {
-            return Ok(Some(value.into_bytes()));
-        }
-        match read_secret_blocking(&self.secrets, &key) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(err) => {
-                warn!(secret = %key, error = %err, "secret lookup failed");
-                Err(SecretsError::NotFound)
-            }
-        }
-    }
-}
-
-impl HttpClientHost for HostState {
-    fn send(
+    fn send_http_request(
         &mut self,
         req: HttpRequest,
+        opts: Option<HttpRequestOptionsV1_1>,
         _ctx: Option<HttpTenantCtx>,
     ) -> Result<HttpResponse, HttpClientError> {
         if !self.config.http_enabled {
@@ -327,6 +311,20 @@ impl HttpClientHost for HostState {
             builder = builder.body(body);
         }
 
+        if let Some(opts) = opts {
+            if let Some(timeout_ms) = opts.timeout_ms {
+                builder = builder.timeout(Duration::from_millis(timeout_ms as u64));
+            }
+            if opts.allow_insecure == Some(true) {
+                warn!(url = %req.url, "allow-insecure not supported; using default TLS validation");
+            }
+            if let Some(follow_redirects) = opts.follow_redirects
+                && !follow_redirects
+            {
+                warn!(url = %req.url, "follow-redirects=false not supported; using default client behaviour");
+            }
+        }
+
         let response = match builder.send() {
             Ok(resp) => resp,
             Err(err) => {
@@ -369,6 +367,88 @@ impl HttpClientHost for HostState {
             headers: headers_vec,
             body: body_bytes,
         })
+    }
+}
+
+impl SecretsStoreHost for HostState {
+    fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, SecretsError> {
+        if !self.config.secrets_policy.is_allowed(&key) {
+            return Err(SecretsError::Denied);
+        }
+        if let Some(mock) = &self.mocks
+            && let Some(value) = mock.secrets_lookup(&key)
+        {
+            return Ok(Some(value.into_bytes()));
+        }
+        match read_secret_blocking(&self.secrets, &key) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(err) => {
+                warn!(secret = %key, error = %err, "secret lookup failed");
+                Err(SecretsError::NotFound)
+            }
+        }
+    }
+}
+
+impl HttpClientHost for HostState {
+    fn send(
+        &mut self,
+        req: HttpRequest,
+        ctx: Option<HttpTenantCtx>,
+    ) -> Result<HttpResponse, HttpClientError> {
+        self.send_http_request(req, None, ctx)
+    }
+}
+
+impl HttpClientHostV1_1 for HostState {
+    fn send(
+        &mut self,
+        req: HttpRequestV1_1,
+        opts: Option<HttpRequestOptionsV1_1>,
+        ctx: Option<HttpTenantCtxV1_1>,
+    ) -> Result<HttpResponseV1_1, HttpClientErrorV1_1> {
+        let legacy_req = HttpRequest {
+            method: req.method,
+            url: req.url,
+            headers: req.headers,
+            body: req.body,
+        };
+        let legacy_ctx = ctx.map(|ctx| HttpTenantCtx {
+            env: ctx.env,
+            tenant: ctx.tenant,
+            tenant_id: ctx.tenant_id,
+            team: ctx.team,
+            team_id: ctx.team_id,
+            user: ctx.user,
+            user_id: ctx.user_id,
+            trace_id: ctx.trace_id,
+            correlation_id: ctx.correlation_id,
+            attributes: ctx.attributes,
+            session_id: ctx.session_id,
+            flow_id: ctx.flow_id,
+            node_id: ctx.node_id,
+            provider_id: ctx.provider_id,
+            deadline_ms: ctx.deadline_ms,
+            attempt: ctx.attempt,
+            idempotency_key: ctx.idempotency_key,
+            impersonation: ctx
+                .impersonation
+                .map(|ImpersonationV1_1 { actor_id, reason }| ImpersonationV1_0 {
+                    actor_id,
+                    reason,
+                }),
+        });
+
+        self.send_http_request(legacy_req, opts, legacy_ctx)
+            .map(|resp| HttpResponseV1_1 {
+                status: resp.status,
+                headers: resp.headers,
+                body: resp.body,
+            })
+            .map_err(|err| HttpClientErrorV1_1 {
+                code: err.code,
+                message: err.message,
+            })
     }
 }
 
@@ -699,6 +779,7 @@ pub fn register_all(linker: &mut Linker<ComponentState>) -> Result<()> {
     add_all_v1_to_linker(
         linker,
         HostFns {
+            http_client_v1_1: Some(|state| state.host_mut()),
             http_client: Some(|state| state.host_mut()),
             oauth_broker: None,
             runner_host_http: Some(|state| state.host_mut()),

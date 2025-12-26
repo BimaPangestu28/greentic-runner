@@ -17,10 +17,10 @@ exclude = [
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.15"
+version = "0.4.16"
 
 [workspace.dependencies]
-arc-swap = "1.7"
+arc-swap = "1"
 async-trait = "0.1"
 anyhow = "1"
 axum = { version = "0.8", features = ["macros", "json"] }
@@ -67,7 +67,7 @@ wasmparser = "0.243"
 cron = "0.15"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
-zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "7", default-features = false, features = ["deflate-flate2"] }
 indexmap = "2"
 bytes = "1"
 hmac = "0.12"
@@ -79,9 +79,9 @@ tiny_http = "0.12"
 serial_test = "3"
 toml = "0.9"
 greentic-telemetry = "0.4"
-wasmtime = { version = "39", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
-wasmtime-wasi = { version = "39", default-features = false, features = ["p2"] }
-jsonschema = "0.37"
+wasmtime = { version = "40", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
+wasmtime-wasi = { version = "40", default-features = false, features = ["p2"] }
+jsonschema = "0.38"
 
 [profile.release.package."echo-secret"]
 # Size-tuned build for the secrets_store_smoke fixture component.
