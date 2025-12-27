@@ -86,6 +86,9 @@ jobs:
           if [[ -f "$CARGO_TARGET_DIR/$TARGET/release/greentic-gen-bindings${BIN_EXT}" ]]; then
             cp "$CARGO_TARGET_DIR/$TARGET/release/greentic-gen-bindings${BIN_EXT}" "$STAGING/"
           fi
+          if [[ -f "$CARGO_TARGET_DIR/$TARGET/release/greentic-runner-cli${BIN_EXT}" ]]; then
+            cp "$CARGO_TARGET_DIR/$TARGET/release/greentic-runner-cli${BIN_EXT}" "$STAGING/"
+          fi
           cp README.md LICENSE "$STAGING/" || true
 
           tar czf "$STAGING.tgz" -C "$STAGING" .

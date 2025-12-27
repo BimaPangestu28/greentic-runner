@@ -47,3 +47,7 @@ path = "src/main.rs"
 [[bin]]
 name = "greentic-gen-bindings"
 path = "src/bin/gen_bindings.rs"
+
+[[bin]]
+name = "greentic-runner-cli"
+path = "src/bin/greentic-runner-cli.rs"
