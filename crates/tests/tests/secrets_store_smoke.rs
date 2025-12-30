@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use greentic_runner_host::config::HostConfig;
 use greentic_runner_host::pack::{self, ComponentState, HostState};
+use greentic_runner_host::provider_core_only;
 use greentic_runner_host::runtime_wasmtime::{Component, Engine, Linker, Store};
 use greentic_runner_host::secrets::default_manager;
 use greentic_runner_host::wasi::RunnerWasiPolicy;
@@ -18,7 +19,16 @@ fn secrets_store_end_to_end_missing_and_success() -> Result<()> {
     let wasm = build_fixture_component()?;
     let config = write_minimal_config()?;
 
-    // Missing secret -> component reports missing.
+    if provider_core_only::is_enabled() {
+        let err = invoke_component(&wasm, Arc::clone(&config))
+            .expect_err("secrets host should be blocked when provider-core only is enabled");
+        assert!(
+            err.to_string().contains("provider-core"),
+            "error should mention provider-core gate: {err}"
+        );
+        return Ok(());
+    }
+
     let missing = invoke_component(&wasm, Arc::clone(&config))?;
     let missing_json: Value = serde_json::from_str(&missing)?;
     assert_eq!(missing_json["ok"], Value::Bool(false));
@@ -35,6 +45,9 @@ fn secrets_store_end_to_end_missing_and_success() -> Result<()> {
 }
 
 fn invoke_component(wasm: &Path, config: Arc<HostConfig>) -> Result<String> {
+    if provider_core_only::is_enabled() {
+        bail!(provider_core_only::blocked_message("secrets store"))
+    }
     let engine = Engine::default();
     let component =
         Component::from_file(&engine, wasm).with_context(|| format!("failed to load {wasm:?}"))?;

@@ -12,12 +12,13 @@ exclude = [
     "tests/fixtures/component-echo",
     "tests/fixtures/runner-components",
     "tests/fixtures/wasi-p2-smoke",
+    "tests/assets/provider-core-dummy",
 ]
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.18"
+version = "0.4.19"
 
 [workspace.dependencies]
 arc-swap = "1"

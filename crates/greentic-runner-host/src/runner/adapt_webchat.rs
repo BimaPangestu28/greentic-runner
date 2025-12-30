@@ -10,6 +10,7 @@ use crate::ingress::{
     CanonicalAttachment, ProviderIds, build_canonical_payload, canonical_session_key,
     default_metadata, empty_entities,
 };
+use crate::provider_core_only;
 use crate::routing::TenantRuntimeHandle;
 use crate::runner::ingress_util::{collect_body, mark_processed};
 
@@ -17,6 +18,11 @@ pub async fn activities(
     TenantRuntimeHandle { tenant, runtime }: TenantRuntimeHandle,
     request: Request<Body>,
 ) -> Result<StatusCode, StatusCode> {
+    if provider_core_only::is_enabled() {
+        tracing::warn!("provider-core only mode enabled; blocking webchat webhook");
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
+
     let (_, body) = request.into_parts();
     let bytes = collect_body(body).await?;
     let raw: Value = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;

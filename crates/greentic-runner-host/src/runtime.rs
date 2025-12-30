@@ -274,6 +274,9 @@ impl TenantRuntime {
     }
 
     pub fn get_secret(&self, key: &str) -> Result<String> {
+        if crate::provider_core_only::is_enabled() {
+            bail!(crate::provider_core_only::blocked_message("secrets"))
+        }
         if !self.config.secrets_policy.is_allowed(key) {
             bail!("secret {key} is not permitted by bindings policy");
         }

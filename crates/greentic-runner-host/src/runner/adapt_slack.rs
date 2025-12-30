@@ -16,6 +16,7 @@ use crate::ingress::{
     CanonicalAttachment, CanonicalButton, ProviderIds, build_canonical_payload,
     canonical_session_key, default_metadata, empty_entities,
 };
+use crate::provider_core_only;
 use crate::routing::TenantRuntimeHandle;
 use crate::runner::ingress_util::{collect_body, mark_processed};
 
@@ -25,6 +26,11 @@ pub async fn events(
     TenantRuntimeHandle { tenant, runtime }: TenantRuntimeHandle,
     request: Request<Body>,
 ) -> Result<Response, StatusCode> {
+    if provider_core_only::is_enabled() {
+        tracing::warn!("provider-core only mode enabled; blocking slack events webhook");
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
+
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
     let bytes = collect_body(body).await?;
@@ -100,6 +106,11 @@ pub async fn interactive(
     headers: HeaderMap,
     Form(body): Form<SlackInteractiveForm>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    if provider_core_only::is_enabled() {
+        tracing::warn!("provider-core only mode enabled; blocking slack interactive webhook");
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
+
     if let Some(secret) = signing_secret() {
         let timestamp = headers
             .get("X-Slack-Request-Timestamp")

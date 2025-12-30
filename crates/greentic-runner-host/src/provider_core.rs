@@ -1,0 +1,38 @@
+#![allow(clippy::allow_attributes)]
+
+// Provider-core bindings for greentic:provider-core@1.0.0.
+pub mod schema_core {
+    wasmtime::component::bindgen!({
+        inline: r#"
+        package greentic:provider-core@1.0.0;
+
+        /// Core provider runtime surface.
+        interface schema-core-api {
+          /// Result of validating a provider configuration payload as JSON bytes.
+          type validation-result = list<u8>;
+          /// Health status reported by the provider runtime as JSON bytes.
+          type health-status = list<u8>;
+          /// Result of invoking a provider operation as JSON bytes.
+          type invoke-result = list<u8>;
+
+          /// Return the provider manifest as JSON bytes.
+          describe: func() -> validation-result;
+          /// Validate a provider configuration JSON payload.
+          validate-config: func(config-json: list<u8>) -> validation-result;
+          /// Lightweight health probe.
+          healthcheck: func() -> health-status;
+          /// Invoke an operation with JSON input.
+          invoke: func(op: string, input-json: list<u8>) -> invoke-result;
+        }
+
+        world schema-core {
+          export schema-core-api;
+        }
+        "#,
+        world: "schema-core",
+    });
+}
+
+pub use schema_core::SchemaCore;
+pub use schema_core::SchemaCorePre;
+pub use schema_core::exports;

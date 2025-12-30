@@ -8,6 +8,7 @@ echo "==> Local CI mirror (greentic-runner)"
 export CARGO_TERM_COLOR=always
 export RUSTFLAGS="-Dwarnings"
 export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+export GREENTIC_PROVIDER_CORE_ONLY="${GREENTIC_PROVIDER_CORE_ONLY:-1}"
 
 # If you *really* want to prefetch in CI, do it unconditionally here:
 # echo "==> Prefetching dependencies (cargo fetch --locked)"

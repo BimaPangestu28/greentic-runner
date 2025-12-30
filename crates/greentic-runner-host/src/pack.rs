@@ -11,6 +11,9 @@ use crate::component_api::{
     ComponentPre, control, node::ExecCtx as ComponentExecCtx, node::InvokeResult, node::NodeError,
 };
 use crate::oauth::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
+use crate::provider::{ProviderBinding, ProviderRegistry};
+use crate::provider_core::SchemaCorePre as ProviderComponentPre;
+use crate::provider_core_only;
 use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable};
 use anyhow::{Context, Result, anyhow, bail};
 use greentic_interfaces_wasmtime::host_helpers::v1::{
@@ -46,7 +49,7 @@ use host_v1::http_client::{
     TenantCtx as HttpTenantCtx, TenantCtxV1_1 as HttpTenantCtxV1_1,
 };
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use reqwest::blocking::Client as BlockingClient;
 use runner_core::normalize_under_root;
 use serde::{Deserialize, Serialize};
@@ -92,6 +95,7 @@ pub struct PackRuntime {
     session_store: Option<DynSessionStore>,
     state_store: Option<DynStateStore>,
     wasi_policy: Arc<RunnerWasiPolicy>,
+    provider_registry: RwLock<Option<ProviderRegistry>>,
     secrets: DynSecretsManager,
     oauth_config: Option<OAuthBrokerConfig>,
 }
@@ -198,6 +202,9 @@ impl HostState {
     }
 
     pub fn get_secret(&self, key: &str) -> Result<String> {
+        if provider_core_only::is_enabled() {
+            bail!(provider_core_only::blocked_message("secrets"))
+        }
         if !self.config.secrets_policy.is_allowed(key) {
             bail!("secret {key} is not permitted by bindings policy");
         }
@@ -372,6 +379,10 @@ impl HostState {
 
 impl SecretsStoreHost for HostState {
     fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, SecretsError> {
+        if provider_core_only::is_enabled() {
+            warn!(secret = %key, "provider-core only mode enabled; blocking secrets store");
+            return Err(SecretsError::Denied);
+        }
         if !self.config.secrets_policy.is_allowed(&key) {
             return Err(SecretsError::Denied);
         }
@@ -948,6 +959,7 @@ impl PackRuntime {
             session_store,
             state_store,
             wasi_policy,
+            provider_registry: RwLock::new(None),
             secrets,
             oauth_config,
         })
@@ -1039,23 +1051,11 @@ impl PackRuntime {
             .get(component_ref)
             .with_context(|| format!("component '{component_ref}' not found in pack"))?;
 
-        let pre = if let Some(pre) = self.pre_cache.lock().get(component_ref).cloned() {
-            pre
-        } else {
-            let mut linker = Linker::new(&self.engine);
-            register_all(&mut linker)?;
-            add_component_control_to_linker(&mut linker)?;
-            let pre = ComponentPre::new(
-                linker
-                    .instantiate_pre(&pack_component.component)
-                    .map_err(|err| anyhow!(err))?,
-            )
-            .map_err(|err| anyhow!(err))?;
-            self.pre_cache
-                .lock()
-                .insert(component_ref.to_string(), pre.clone());
-            pre
-        };
+        let mut linker = Linker::new(&self.engine);
+        register_all(&mut linker)?;
+        add_component_control_to_linker(&mut linker)?;
+        let pre_instance = linker.instantiate_pre(&pack_component.component)?;
+        let pre: ComponentPre<ComponentState> = ComponentPre::new(pre_instance)?;
 
         let host_state = HostState::new(
             Arc::clone(&self.config),
@@ -1068,10 +1068,7 @@ impl PackRuntime {
         )?;
         let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
         let mut store = wasmtime::Store::new(&self.engine, store_state);
-        let bindings = pre
-            .instantiate_async(&mut store)
-            .await
-            .map_err(|err| anyhow!(err))?;
+        let bindings: crate::component_api::Component = pre.instantiate_async(&mut store).await?;
         let node = bindings.greentic_component_node();
 
         let result = node.call_invoke(&mut store, &ctx, operation, &input_json)?;
@@ -1109,6 +1106,71 @@ impl PackRuntime {
                 Ok(Value::Object(obj))
             }
         }
+    }
+
+    pub fn resolve_provider(
+        &self,
+        provider_id: Option<&str>,
+        provider_type: Option<&str>,
+    ) -> Result<ProviderBinding> {
+        let registry = self.provider_registry()?;
+        registry.resolve(provider_id, provider_type)
+    }
+
+    pub async fn invoke_provider(
+        &self,
+        binding: &ProviderBinding,
+        _ctx: ComponentExecCtx,
+        op: &str,
+        input_json: Vec<u8>,
+    ) -> Result<Value> {
+        let component_ref = &binding.component_ref;
+        let pack_component = self
+            .components
+            .get(component_ref)
+            .with_context(|| format!("provider component '{component_ref}' not found in pack"))?;
+
+        let mut linker = Linker::new(&self.engine);
+        register_all(&mut linker)?;
+        add_component_control_to_linker(&mut linker)?;
+        let pre_instance = linker.instantiate_pre(&pack_component.component)?;
+        let pre: ProviderComponentPre<ComponentState> = ProviderComponentPre::new(pre_instance)?;
+
+        let host_state = HostState::new(
+            Arc::clone(&self.config),
+            Arc::clone(&self.http_client),
+            self.mocks.clone(),
+            self.session_store.clone(),
+            self.state_store.clone(),
+            Arc::clone(&self.secrets),
+            self.oauth_config.clone(),
+        )?;
+        let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
+        let mut store = wasmtime::Store::new(&self.engine, store_state);
+        let bindings: crate::provider_core::SchemaCore = pre.instantiate_async(&mut store).await?;
+        let provider = bindings.greentic_provider_core_schema_core_api();
+
+        let result = provider.call_invoke(&mut store, op, &input_json)?;
+        deserialize_json_bytes(result)
+    }
+
+    fn provider_registry(&self) -> Result<ProviderRegistry> {
+        if let Some(registry) = self.provider_registry.read().clone() {
+            return Ok(registry);
+        }
+        let manifest = self
+            .manifest
+            .as_ref()
+            .context("pack manifest required for provider resolution")?;
+        let env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
+        let registry = ProviderRegistry::new(
+            manifest,
+            self.state_store.clone(),
+            &self.config.tenant,
+            &env,
+        )?;
+        *self.provider_registry.write() = Some(registry.clone());
+        Ok(registry)
     }
 
     pub fn load_flow(&self, flow_id: &str) -> Result<Flow> {
@@ -1228,6 +1290,7 @@ impl PackRuntime {
             session_store: None,
             state_store: None,
             wasi_policy: Arc::new(RunnerWasiPolicy::new()),
+            provider_registry: RwLock::new(None),
             secrets: crate::secrets::default_manager(),
             oauth_config: None,
         })
@@ -1238,6 +1301,17 @@ struct PackFlows {
     descriptors: Vec<FlowDescriptor>,
     flows: HashMap<String, Flow>,
     metadata: PackMetadata,
+}
+
+fn deserialize_json_bytes(bytes: Vec<u8>) -> Result<Value> {
+    if bytes.is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(&bytes).or_else(|_| {
+        String::from_utf8(bytes)
+            .map(Value::String)
+            .map_err(|err| anyhow!(err))
+    })
 }
 
 impl PackFlows {

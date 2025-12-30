@@ -72,6 +72,7 @@ pub struct HostNode {
 enum NodeKind {
     Exec { target_component: String },
     PackComponent { component_ref: String },
+    ProviderInvoke,
     FlowCall,
     BuiltinEmit { kind: EmitKind },
     Wait,
@@ -381,6 +382,10 @@ impl FlowEngine {
                 .execute_flow_call(ctx, payload)
                 .await
                 .map(DispatchOutcome::complete),
+            NodeKind::ProviderInvoke => self
+                .execute_provider_invoke(ctx, node_id, state, payload)
+                .await
+                .map(DispatchOutcome::complete),
             NodeKind::BuiltinEmit { kind } => {
                 match kind {
                     EmitKind::Log | EmitKind::Response => {}
@@ -507,6 +512,81 @@ impl FlowEngine {
             .await?;
 
         Ok(NodeOutput::new(value))
+    }
+
+    async fn execute_provider_invoke(
+        &self,
+        ctx: &FlowContext<'_>,
+        node_id: &str,
+        state: &ExecutionState,
+        payload: Value,
+    ) -> Result<NodeOutput> {
+        #[derive(Deserialize)]
+        struct ProviderPayload {
+            #[serde(default)]
+            provider_id: Option<String>,
+            #[serde(default)]
+            provider_type: Option<String>,
+            #[serde(default, alias = "operation")]
+            op: Option<String>,
+            #[serde(default)]
+            input: Value,
+            #[serde(default)]
+            in_map: Value,
+            #[serde(default)]
+            out_map: Value,
+            #[serde(default)]
+            err_map: Value,
+        }
+
+        let payload: ProviderPayload =
+            serde_json::from_value(payload).context("invalid payload for provider.invoke")?;
+        let op = payload
+            .op
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+            .with_context(|| "provider.invoke requires an op")?
+            .to_string();
+
+        let mut input_value = if !payload.in_map.is_null() {
+            let ctx_value = mapping_ctx(payload.input.clone(), state);
+            apply_mapping(&payload.in_map, &ctx_value)
+                .context("failed to evaluate provider.invoke in_map")?
+        } else if !payload.input.is_null() {
+            payload.input
+        } else {
+            Value::Null
+        };
+
+        if let Value::Object(ref mut map) = input_value {
+            map.entry("state".to_string())
+                .or_insert_with(|| state.context());
+        }
+        let input_json = serde_json::to_vec(&input_value)?;
+
+        let pack_idx = *self
+            .flow_sources
+            .get(ctx.flow_id)
+            .with_context(|| format!("flow {} not registered", ctx.flow_id))?;
+        let pack = Arc::clone(&self.packs[pack_idx]);
+        let binding = pack.resolve_provider(
+            payload.provider_id.as_deref(),
+            payload.provider_type.as_deref(),
+        )?;
+        let exec_ctx = component_exec_ctx(ctx, node_id);
+        let result = pack
+            .invoke_provider(&binding, exec_ctx, &op, input_json)
+            .await?;
+
+        let output = if payload.out_map.is_null() {
+            result
+        } else {
+            let ctx_value = mapping_ctx(result, state);
+            apply_mapping(&payload.out_map, &ctx_value)
+                .context("failed to evaluate provider.invoke out_map")?
+        };
+        let _ = payload.err_map;
+        Ok(NodeOutput::new(output))
     }
 
     pub fn flows(&self) -> &[FlowDescriptor] {
@@ -666,6 +746,38 @@ fn extract_wait_reason(payload: &Value) -> Option<String> {
     }
 }
 
+fn mapping_ctx(root: Value, state: &ExecutionState) -> Value {
+    json!({
+        "input": root.clone(),
+        "result": root,
+        "state": state.context(),
+    })
+}
+
+fn apply_mapping(template: &Value, ctx: &Value) -> Result<Value> {
+    match template {
+        Value::String(path) if path.starts_with('/') => ctx
+            .pointer(path)
+            .cloned()
+            .ok_or_else(|| anyhow!("mapping path `{path}` not found")),
+        Value::Array(items) => {
+            let mut mapped = Vec::with_capacity(items.len());
+            for item in items {
+                mapped.push(apply_mapping(item, ctx)?);
+            }
+            Ok(Value::Array(mapped))
+        }
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, value) in map {
+                out.insert(key.clone(), apply_mapping(value, ctx)?);
+            }
+            Ok(Value::Object(out))
+        }
+        other => Ok(other.clone()),
+    }
+}
+
 impl From<Flow> for HostFlow {
     fn from(value: Flow) -> Self {
         let mut nodes = IndexMap::new();
@@ -704,6 +816,7 @@ impl From<Node> for HostNode {
                 }
             }
             "flow.call" => NodeKind::FlowCall,
+            "provider.invoke" => NodeKind::ProviderInvoke,
             "session.wait" => NodeKind::Wait,
             comp if comp.starts_with("emit.") => NodeKind::BuiltinEmit {
                 kind: emit_kind_from_ref(comp),
@@ -715,6 +828,7 @@ impl From<Node> for HostNode {
         let component_label = match &kind {
             NodeKind::Exec { .. } => "component.exec".to_string(),
             NodeKind::PackComponent { component_ref } => component_ref.clone(),
+            NodeKind::ProviderInvoke => "provider.invoke".to_string(),
             NodeKind::FlowCall => "flow.call".to_string(),
             NodeKind::BuiltinEmit { kind } => emit_ref_from_kind(kind),
             NodeKind::Wait => "session.wait".to_string(),

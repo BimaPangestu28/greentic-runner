@@ -21,3 +21,4 @@ jsonschema.workspace = true
 greentic-flow.workspace = true
 zip.workspace = true
 semver.workspace = true
+once_cell.workspace = true

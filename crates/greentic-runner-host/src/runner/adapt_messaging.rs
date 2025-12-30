@@ -9,6 +9,7 @@ use crate::engine::runtime::IngressEnvelope;
 use crate::ingress::{
     ProviderIds, build_canonical_payload, canonical_session_key, default_metadata, empty_entities,
 };
+use crate::provider_core_only;
 use crate::routing::TenantRuntimeHandle;
 use crate::runtime::TenantRuntime;
 
@@ -42,6 +43,14 @@ pub async fn telegram_webhook(
     TenantRuntimeHandle { tenant, runtime }: TenantRuntimeHandle,
     Json(update): Json<TelegramUpdate>,
 ) -> StatusCode {
+    if provider_core_only::is_enabled() {
+        tracing::warn!(
+            update_id = update.update_id,
+            "provider-core only mode enabled; blocking telegram webhook"
+        );
+        return StatusCode::NOT_IMPLEMENTED;
+    }
+
     if let Some(status) = {
         let mut cache = runtime.telegram_cache().lock();
         cache.get(&update.update_id).copied()

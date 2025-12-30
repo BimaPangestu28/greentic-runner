@@ -11,6 +11,7 @@ use crate::ingress::{
     CanonicalAttachment, ProviderIds, build_canonical_payload, canonical_session_key,
     default_metadata, empty_entities,
 };
+use crate::provider_core_only;
 use crate::routing::TenantRuntimeHandle;
 use crate::runner::ingress_util::{collect_body, mark_processed};
 
@@ -20,6 +21,11 @@ pub async fn webhook(
     TenantRuntimeHandle { tenant, runtime }: TenantRuntimeHandle,
     request: Request<Body>,
 ) -> Result<StatusCode, StatusCode> {
+    if provider_core_only::is_enabled() {
+        tracing::warn!("provider-core only mode enabled; blocking webex webhook");
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
+
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
     let bytes = collect_body(body).await?;

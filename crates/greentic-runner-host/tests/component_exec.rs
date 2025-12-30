@@ -200,6 +200,7 @@ fn build_pack(flow_yaml: &str, pack_path: &Path) -> Result<()> {
         signatures: Default::default(),
         secret_requirements: Vec::new(),
         bootstrap: None,
+        extensions: None,
     };
 
     let mut zip = zip::ZipWriter::new(File::create(pack_path).context("create pack archive")?);

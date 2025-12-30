@@ -262,6 +262,7 @@ fn build_runner_components_pack(pack_path: &std::path::Path) -> Result<()> {
         signatures: Default::default(),
         secret_requirements: Vec::new(),
         bootstrap: None,
+        extensions: None,
     };
 
     let mut writer = ZipWriter::new(
