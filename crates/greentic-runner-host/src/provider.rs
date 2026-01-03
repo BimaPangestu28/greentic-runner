@@ -60,12 +60,6 @@ struct ProviderExtDecl {
     docs_ref: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct ProviderExtensionInline {
-    #[serde(default)]
-    providers: Vec<ProviderExtDecl>,
-}
-
 #[derive(Clone)]
 pub struct ProviderRegistry {
     pack_ref: Option<String>,
@@ -162,18 +156,30 @@ impl ProviderRegistry {
 }
 
 fn extract_inline_providers(manifest: &PackManifest) -> Result<Vec<ProviderExtDecl>> {
-    let Some(exts) = manifest.extensions.as_ref() else {
+    let Some(inline) = manifest.provider_extension_inline() else {
         return Ok(Vec::new());
     };
-    let Some(ext) = exts.get("greentic.ext.provider") else {
-        return Ok(Vec::new());
-    };
-    let Some(inline) = ext.inline.as_ref() else {
-        return Ok(Vec::new());
-    };
-    let parsed: ProviderExtensionInline = serde_json::from_value(inline.clone())
-        .context("invalid greentic.ext.provider inline payload")?;
-    Ok(parsed.providers)
+
+    let providers = inline
+        .providers
+        .iter()
+        .map(|provider| ProviderExtDecl {
+            provider_id: Some(provider.provider_type.clone()),
+            provider_type: provider.provider_type.clone(),
+            capabilities: provider.capabilities.clone(),
+            ops: provider.ops.clone(),
+            config_schema_ref: Some(provider.config_schema_ref.clone()),
+            state_schema_ref: provider.state_schema_ref.clone(),
+            runtime: ProviderExtRuntime {
+                component_ref: provider.runtime.component_ref.clone(),
+                export: provider.runtime.export.clone(),
+                world: provider.runtime.world.clone(),
+            },
+            docs_ref: provider.docs_ref.clone(),
+        })
+        .collect();
+
+    Ok(providers)
 }
 
 fn binding_from_decl(

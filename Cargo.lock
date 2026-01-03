@@ -520,9 +520,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.53"
+version = "4.5.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9e340e012a1bf4935f5282ed1436d1489548e8f72308207ea5df0e23d2d03f8"
+checksum = "c6e6ff9dcd79cff5cd969a17a545d79e84ab086e444102a591e288a8aa3ce394"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -530,9 +530,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.53"
+version = "4.5.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d76b5d13eaa18c901fd2f7fca939fefe3a0727a953561fefdf3b2922b8569d00"
+checksum = "fa42cf4d2b7a41bc8f663a7cab4031ebafa1bf3875705bfaf8466dc60ab52c00"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1073,17 +1073,6 @@ checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
 
 [[package]]
 name = "fancy-regex"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
-dependencies = [
- "bit-set",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
-name = "fancy-regex"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72cf461f865c862bb7dc573f643dd6a2b6842f7c30b07882b56bd148cc2761b8"
@@ -1374,9 +1363,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-flow"
-version = "0.4.7"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1616a1cf46ba3d4c9708a55490bcc282033cc68f6f9cc825dea0bfcf31f017a3"
+checksum = "4a0c712e887fdc4e83a3984ae96b2a543896815fd4e9cd34e19c357aa5b47173"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1384,7 +1373,7 @@ dependencies = [
  "greentic-interfaces",
  "greentic-types",
  "indexmap 2.11.4",
- "jsonschema 0.37.4",
+ "jsonschema",
  "lazy_static",
  "pathdiff",
  "regex",
@@ -1443,9 +1432,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-pack"
-version = "0.4.29"
+version = "0.4.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "652b1d510250857f0b42e82c0ab86b2d710dfdd77343ee3b2f19b2c44aa54156"
+checksum = "c24d83029ae9075130124aa4b860ab61a327abe8def39ec55530ac1e6ec341ac"
 dependencies = [
  "anyhow",
  "base64",
@@ -1472,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner"
-version = "0.4.20"
+version = "0.4.21"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1501,7 +1490,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-desktop"
-version = "0.4.20"
+version = "0.4.21"
 dependencies = [
  "anyhow",
  "greentic-pack",
@@ -1520,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-host"
-version = "0.4.20"
+version = "0.4.21"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1576,7 +1565,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-tests"
-version = "0.4.20"
+version = "0.4.21"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1584,7 +1573,7 @@ dependencies = [
  "greentic-flow",
  "greentic-runner-host",
  "greentic-types",
- "jsonschema 0.38.1",
+ "jsonschema",
  "once_cell",
  "parking_lot",
  "reqwest",
@@ -1737,9 +1726,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-types"
-version = "0.4.27"
+version = "0.4.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2591a28116449b7f3e509f920deef65c2aa819bec7d04178f31f0b383940e85"
+checksum = "e9f824ac8b55aa50a3afc49f5dcdb8a8cb328fce218ba411010864643d467a62"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1763,9 +1752,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-types-macros"
-version = "0.4.27"
+version = "0.4.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd05d00a4ed56fd8c32029d2f6cc710177c0cae2e4c45c4eccd5edc7d02a2509"
+checksum = "99c28a91fddb5942d47932e1bf65838f8057daf9c28f2abf96993e16aedde15d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2234,34 +2223,6 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.37.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73c9ffb2b5c56d58030e1b532d8e8389da94590515f118cf35b5cb68e4764a7e"
-dependencies = [
- "ahash",
- "bytecount",
- "data-encoding",
- "email_address",
- "fancy-regex 0.16.2",
- "fraction",
- "getrandom 0.3.4",
- "idna",
- "itoa",
- "num-cmp",
- "num-traits",
- "percent-encoding",
- "referencing 0.37.4",
- "regex",
- "regex-syntax",
- "reqwest",
- "serde",
- "serde_json",
- "unicode-general-category",
- "uuid-simd",
-]
-
-[[package]]
-name = "jsonschema"
 version = "0.38.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89f50532ce4a0ba3ae930212908d8ec50e7806065c059fe9c75da2ece6132294"
@@ -2270,7 +2231,7 @@ dependencies = [
  "bytecount",
  "data-encoding",
  "email_address",
- "fancy-regex 0.17.0",
+ "fancy-regex",
  "fraction",
  "getrandom 0.3.4",
  "idna",
@@ -2278,7 +2239,7 @@ dependencies = [
  "num-cmp",
  "num-traits",
  "percent-encoding",
- "referencing 0.38.1",
+ "referencing",
  "regex",
  "regex-syntax",
  "reqwest",
@@ -2302,9 +2263,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.178"
+version = "0.2.179"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
+checksum = "c5a2d376baa530d1238d133232d15e239abad80d05838b4b59354e5268af431f"
 
 [[package]]
 name = "libm"
@@ -3086,21 +3047,6 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.37.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4283168a506f0dcbdce31c9f9cce3129c924da4c6bca46e46707fcb746d2d70c"
-dependencies = [
- "ahash",
- "fluent-uri",
- "getrandom 0.3.4",
- "hashbrown 0.16.1",
- "parking_lot",
- "percent-encoding",
- "serde_json",
-]
-
-[[package]]
-name = "referencing"
 version = "0.38.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "15a8af0c6bb8eaf8b07cb06fc31ff30ca6fe19fb99afa476c276d8b24f365b0b"
@@ -3213,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.4.20"
+version = "0.4.21"
 dependencies = [
  "anyhow",
  "base64",
@@ -3888,9 +3834,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.48.0"
+version = "1.49.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff360e02eab121e0bc37a2d3b4d4dc622e6eda3a8e5253d5435ecf5bd4c68408"
+checksum = "72a2903cd7736441aac9df9d7688bd0ce48edccaadf181c3b90be801e81d3d86"
 dependencies = [
  "bytes",
  "libc",
@@ -4724,9 +4670,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2878ef029c47c6e8cf779119f20fcf52bde7ad42a731b2a304bc221df17571e"
+checksum = "12bed680863276c63889429bfd6cab3b99943659923822de1c8a39c49e4d722c"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -5283,9 +5229,9 @@ checksum = "40990edd51aae2c2b6907af74ffb635029d5788228222c4bb811e9351c0caad3"
 
 [[package]]
 name = "zmij"
-version = "1.0.5"
+version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3280a1b827474fcd5dbef4b35a674deb52ba5c312363aef9135317df179d81b"
+checksum = "4ee2a72b10d087f75fb2e1c2c7343e308fe6970527c22a41caf8372e165ff5c1"
 
 [[package]]
 name = "zopfli"

@@ -264,32 +264,30 @@ fn build_pack(component_path: &Path, pack_path: &Path, flows: &[Flow]) -> Result
 
 fn provider_extension() -> BTreeMap<String, greentic_types::ExtensionRef> {
     let mut exts = BTreeMap::new();
-    let inline = json!({
-        "providers": [
-            {
-                "provider_id": "dummy",
-                "provider_type": "example.dummy",
-                "capabilities": [],
-                "ops": ["echo"],
-                "config_schema_ref": "schemas/config.schema.json",
-                "state_schema_ref": "schemas/state.schema.json",
-                "runtime": {
-                    "component_ref": "provider.dummy",
-                    "export": "provider-core",
-                    "world": "greentic:provider-core@1.0.0"
-                },
-                "docs_ref": "schemas/README.md"
-            }
-        ]
-    });
+    let inline = greentic_types::ProviderExtensionInline {
+        providers: vec![greentic_types::ProviderDecl {
+            provider_type: "example.dummy".into(),
+            capabilities: Vec::new(),
+            ops: vec!["echo".into()],
+            config_schema_ref: "schemas/config.schema.json".into(),
+            state_schema_ref: Some("schemas/state.schema.json".into()),
+            runtime: greentic_types::ProviderRuntimeRef {
+                component_ref: "provider.dummy".into(),
+                export: "provider-core".into(),
+                world: "greentic:provider-core@1.0.0".into(),
+            },
+            docs_ref: Some("schemas/README.md".into()),
+        }],
+        ..Default::default()
+    };
     exts.insert(
-        "greentic.ext.provider".into(),
+        greentic_types::PROVIDER_EXTENSION_ID.to_string(),
         greentic_types::ExtensionRef {
-            kind: "greentic.ext.provider".into(),
+            kind: greentic_types::PROVIDER_EXTENSION_ID.to_string(),
             version: "1.0.0".into(),
             digest: None,
             location: None,
-            inline: Some(inline),
+            inline: Some(greentic_types::ExtensionInline::Provider(inline)),
         },
     );
     exts
