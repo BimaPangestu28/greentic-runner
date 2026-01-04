@@ -837,6 +837,14 @@ impl From<Node> for HostNode {
             NodeKind::BuiltinEmit { .. } => extract_emit_payload(&node.input.mapping),
             _ => node.input.mapping.clone(),
         };
+        let payload_expr = match &kind {
+            // Packs may encode the component operation on the FlowComponentRef instead of in the
+            // payload. Preserve it so component.exec sees the bound operation.
+            NodeKind::Exec { .. } | NodeKind::PackComponent { .. } => {
+                merge_operation(payload_expr, node.component.operation.as_deref())
+            }
+            _ => payload_expr,
+        };
         Self {
             kind,
             component: component_label,
@@ -882,6 +890,29 @@ fn emit_ref_from_kind(kind: &EmitKind) -> String {
         EmitKind::Log => "emit.log".to_string(),
         EmitKind::Response => "emit.response".to_string(),
         EmitKind::Other(other) => other.clone(),
+    }
+}
+
+fn merge_operation(payload: Value, operation: Option<&str>) -> Value {
+    let Some(op) = operation else { return payload };
+    match payload {
+        Value::Object(mut map) => {
+            let set_op = match map.get("operation") {
+                Some(Value::String(existing)) => existing.trim().is_empty(),
+                None => true,
+                _ => true,
+            };
+            if set_op {
+                map.insert("operation".into(), Value::String(op.to_string()));
+            }
+            Value::Object(map)
+        }
+        Value::Null => {
+            let mut map = JsonMap::new();
+            map.insert("operation".into(), Value::String(op.to_string()));
+            Value::Object(map)
+        }
+        other => other,
     }
 }
 

@@ -14,9 +14,9 @@ use greentic_runner_host::{
     storage::{DynSessionStore, state::new_state_store},
 };
 use greentic_types::{
-    ComponentCapabilities, ComponentManifest, ComponentProfiles, Flow, FlowComponentRef, FlowId,
-    FlowKind, FlowMetadata, InputMapping, Node, NodeId, OutputMapping, PackFlowEntry, PackKind,
-    PackManifest, ResourceHints, Routing, TelemetryHints,
+    ComponentCapabilities, ComponentManifest, ComponentOperation, ComponentProfiles, Flow,
+    FlowComponentRef, FlowId, FlowKind, FlowMetadata, InputMapping, Node, NodeId, OutputMapping,
+    PackFlowEntry, PackKind, PackManifest, ResourceHints, Routing, TelemetryHints,
 };
 use once_cell::sync::Lazy;
 use semver::Version;
@@ -189,6 +189,79 @@ async fn provider_invoke_supports_messaging_secrets_events() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn component_exec_carries_operation_from_flow() -> Result<()> {
+    let config = write_minimal_config()?;
+    let temp = TempDir::new()?;
+    let component_path =
+        fixture_path("tests/fixtures/packs/runner-components/components/qa_process.wasm");
+
+    let flow_a = build_component_exec_flow("pack-a.flow", "pack A")?;
+    let flow_b = build_component_exec_flow("pack-b.flow", "pack B")?;
+    let pack_a_path = temp.path().join("pack-a.gtpack");
+    let pack_b_path = temp.path().join("pack-b.gtpack");
+    build_component_pack("pack.a", &pack_a_path, &component_path, &[flow_a])?;
+    build_component_pack(
+        "pack.b",
+        &pack_b_path,
+        &component_path,
+        std::slice::from_ref(&flow_b),
+    )?;
+
+    let pack_a = Arc::new(
+        PackRuntime::load(
+            &pack_a_path,
+            Arc::clone(&config),
+            None,
+            Some(&pack_a_path),
+            None::<DynSessionStore>,
+            None,
+            Arc::clone(&WASI_POLICY),
+            default_manager(),
+            None,
+            false,
+        )
+        .await?,
+    );
+    let pack_b = Arc::new(
+        PackRuntime::load(
+            &pack_b_path,
+            Arc::clone(&config),
+            None,
+            Some(&pack_b_path),
+            None::<DynSessionStore>,
+            None,
+            Arc::clone(&WASI_POLICY),
+            default_manager(),
+            None,
+            false,
+        )
+        .await?,
+    );
+    let engine = FlowEngine::new(vec![pack_a, Arc::clone(&pack_b)], Arc::clone(&config)).await?;
+    let retry_config = config.retry_config().into();
+    let ctx = FlowContext {
+        tenant: config.tenant.as_str(),
+        flow_id: flow_b.id.as_str(),
+        node_id: None,
+        tool: None,
+        action: None,
+        session_id: None,
+        provider_id: None,
+        retry_config,
+        observer: None,
+        mocks: None,
+    };
+
+    let execution = engine.execute(ctx, json!({})).await?;
+    match execution.status {
+        greentic_runner_host::runner::engine::FlowStatus::Completed => {}
+        other => panic!("flow should complete, got {other:?}"),
+    }
+    assert_eq!(execution.output["message"], json!("pack B"));
+    Ok(())
+}
+
 fn write_minimal_config() -> Result<Arc<HostConfig>> {
     let temp = TempDir::new()?;
     let path = temp.path().join("bindings.yaml");
@@ -262,6 +335,71 @@ fn build_pack(component_path: &Path, pack_path: &Path, flows: &[Flow]) -> Result
     Ok(())
 }
 
+fn build_component_pack(
+    pack_id: &str,
+    pack_path: &Path,
+    component_path: &Path,
+    flows: &[Flow],
+) -> Result<()> {
+    let flow_entries = flows
+        .iter()
+        .map(|flow| PackFlowEntry {
+            id: flow.id.clone(),
+            kind: flow.kind,
+            flow: flow.clone(),
+            tags: Vec::new(),
+            entrypoints: vec!["default".into()],
+        })
+        .collect::<Vec<_>>();
+    let supported_kinds = flows.iter().map(|flow| flow.kind).collect::<Vec<_>>();
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: pack_id.parse()?,
+        version: Version::parse("0.0.1")?,
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: vec![ComponentManifest {
+            id: "qa.process".parse()?,
+            version: Version::parse("0.1.0")?,
+            supports: supported_kinds,
+            world: "greentic:component@0.4.0".into(),
+            profiles: ComponentProfiles::default(),
+            capabilities: ComponentCapabilities::default(),
+            configurators: None,
+            operations: vec![ComponentOperation {
+                name: "process".into(),
+                input_schema: Value::Null,
+                output_schema: Value::Null,
+            }],
+            config_schema: None,
+            resources: ResourceHints::default(),
+            dev_flows: BTreeMap::new(),
+        }],
+        flows: flow_entries,
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+        secret_requirements: Vec::new(),
+        bootstrap: None,
+        extensions: None,
+    };
+
+    let mut writer =
+        ZipWriter::new(std::fs::File::create(pack_path).context("create pack archive")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = greentic_types::encode_pack_manifest(&manifest)?;
+    writer.start_file("manifest.cbor", options)?;
+    writer.write_all(&manifest_bytes)?;
+
+    writer.start_file("components/qa.process.wasm", options)?;
+    let mut file = std::fs::File::open(component_path)
+        .with_context(|| format!("open component {}", component_path.display()))?;
+    std::io::copy(&mut file, &mut writer)?;
+    writer.finish().context("finalise component pack")?;
+    Ok(())
+}
+
 fn provider_extension() -> BTreeMap<String, greentic_types::ExtensionRef> {
     let mut exts = BTreeMap::new();
     let inline = greentic_types::ProviderExtensionInline {
@@ -326,6 +464,39 @@ fn build_flow(flow_id: &str, flow_kind: FlowKind, in_map: Value, out_map: Value)
         id: FlowId::from_str(flow_id)?,
         kind: flow_kind,
         entrypoints: BTreeMap::from([("default".to_string(), Value::String(node_id.to_string()))]),
+        nodes: nodes.into_iter().collect(),
+        metadata: FlowMetadata::default(),
+    })
+}
+
+fn build_component_exec_flow(flow_id: &str, message: &str) -> Result<Flow> {
+    let node_id = NodeId::from_str("exec").context("node id")?;
+    let mut nodes = HashMap::new();
+    nodes.insert(
+        node_id.clone(),
+        Node {
+            id: node_id.clone(),
+            component: FlowComponentRef {
+                id: "qa.process".parse()?,
+                pack_alias: None,
+                operation: Some("process".into()),
+            },
+            input: InputMapping {
+                mapping: json!({ "input": { "message": message } }),
+            },
+            output: OutputMapping {
+                mapping: Value::Null,
+            },
+            routing: Routing::End,
+            telemetry: TelemetryHints::default(),
+        },
+    );
+
+    Ok(Flow {
+        schema_version: "1.0".into(),
+        id: FlowId::from_str(flow_id)?,
+        kind: FlowKind::Messaging,
+        entrypoints: BTreeMap::from([("default".into(), Value::String(node_id.to_string()))]),
         nodes: nodes.into_iter().collect(),
         metadata: FlowMetadata::default(),
     })
