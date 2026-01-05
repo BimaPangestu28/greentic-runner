@@ -18,7 +18,7 @@ exclude = [
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.22"
+version = "0.4.23"
 
 [workspace.dependencies]
 arc-swap = "1"

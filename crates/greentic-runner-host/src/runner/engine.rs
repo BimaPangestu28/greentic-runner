@@ -64,6 +64,7 @@ pub struct HostNode {
     kind: NodeKind,
     /// Backwards-compatible component label for observers/transcript.
     pub component: String,
+    operation_in_mapping: Option<String>,
     payload_expr: Value,
     routing: Routing,
 }
@@ -368,6 +369,7 @@ impl FlowEngine {
                 .execute_component_exec(
                     ctx,
                     node_id,
+                    node,
                     state,
                     payload,
                     Some(target_component.as_str()),
@@ -375,7 +377,14 @@ impl FlowEngine {
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::PackComponent { component_ref } => self
-                .execute_component_exec(ctx, node_id, state, payload, Some(component_ref.as_str()))
+                .execute_component_exec(
+                    ctx,
+                    node_id,
+                    node,
+                    state,
+                    payload,
+                    Some(component_ref.as_str()),
+                )
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::FlowCall => self
@@ -456,6 +465,7 @@ impl FlowEngine {
         &self,
         ctx: &FlowContext<'_>,
         node_id: &str,
+        node: &HostNode,
         state: &ExecutionState,
         payload: Value,
         component_override: Option<&str>,
@@ -478,10 +488,23 @@ impl FlowEngine {
             .map(str::to_string)
             .or_else(|| payload.component.filter(|v| !v.trim().is_empty()))
             .with_context(|| "component.exec requires a component_ref")?;
-        let operation = payload
-            .operation
-            .filter(|v| !v.trim().is_empty())
-            .with_context(|| "component.exec requires an operation")?;
+        let component_label = node.component.as_str();
+        let operation = match payload.operation.filter(|v| !v.trim().is_empty()) {
+            Some(op) => op,
+            None => {
+                let mut message = format!(
+                    "missing operation for node `{}` (component `{}`); expected node.component.operation to be set",
+                    node_id, component_label,
+                );
+                if let Some(found) = &node.operation_in_mapping {
+                    message.push_str(&format!(
+                        ". Found operation in input.mapping (`{}`) but this is not used; pack compiler must preserve node.component.operation.",
+                        found
+                    ));
+                }
+                bail!(message);
+            }
+        };
         let mut input = payload.input;
         if let Value::Object(mut map) = input {
             map.entry("state".to_string())
@@ -801,6 +824,7 @@ impl From<Flow> for HostFlow {
 impl From<Node> for HostNode {
     fn from(node: Node) -> Self {
         let component_ref = node.component.id.as_str().to_string();
+        let operation_in_mapping = extract_operation_from_mapping(&node.input.mapping);
         let kind = match component_ref.as_str() {
             "component.exec" => {
                 let target = extract_target_component(&node.input.mapping)
@@ -848,6 +872,7 @@ impl From<Node> for HostNode {
         Self {
             kind,
             component: component_label,
+            operation_in_mapping,
             payload_expr,
             routing: node.routing,
         }
@@ -861,6 +886,19 @@ fn extract_target_component(payload: &Value) -> Option<String> {
             .or_else(|| map.get("component_ref"))
             .and_then(Value::as_str)
             .map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+fn extract_operation_from_mapping(payload: &Value) -> Option<String> {
+    match payload {
+        Value::Object(map) => map
+            .get("operation")
+            .or_else(|| map.get("op"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string()),
         _ => None,
     }
 }
@@ -920,6 +958,17 @@ fn merge_operation(payload: Value, operation: Option<&str>) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::runtime::Runtime;
+
+    fn minimal_engine() -> FlowEngine {
+        FlowEngine {
+            packs: Vec::new(),
+            flows: Vec::new(),
+            flow_sources: HashMap::new(),
+            flow_cache: RwLock::new(HashMap::new()),
+            default_env: "local".to_string(),
+        }
+    }
 
     #[test]
     fn templating_renders_with_partials_and_data() {
@@ -965,6 +1014,110 @@ mod tests {
                 { "text": "extra-1" },
                 { "text": "extra-2" }
             ])
+        );
+    }
+
+    #[test]
+    fn missing_operation_reports_node_and_component() {
+        let engine = minimal_engine();
+        let rt = Runtime::new().unwrap();
+        let retry_config = RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 1,
+        };
+        let ctx = FlowContext {
+            tenant: "tenant",
+            flow_id: "flow",
+            node_id: Some("missing-op"),
+            tool: None,
+            action: None,
+            session_id: None,
+            provider_id: None,
+            retry_config,
+            observer: None,
+            mocks: None,
+        };
+        let node = HostNode {
+            kind: NodeKind::Exec {
+                target_component: "qa.process".into(),
+            },
+            component: "component.exec".into(),
+            operation_in_mapping: None,
+            payload_expr: Value::Null,
+            routing: Routing::End,
+        };
+        let state = ExecutionState::new(Value::Null);
+        let payload = json!({ "component": "qa.process" });
+        let err = rt
+            .block_on(engine.execute_component_exec(
+                &ctx,
+                "missing-op",
+                &node,
+                &state,
+                payload,
+                None,
+            ))
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("missing operation for node `missing-op`"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            message.contains("(component `component.exec`)"),
+            "unexpected message: {message}"
+        );
+    }
+
+    #[test]
+    fn missing_operation_mentions_mapping_hint() {
+        let engine = minimal_engine();
+        let rt = Runtime::new().unwrap();
+        let retry_config = RetryConfig {
+            max_attempts: 1,
+            base_delay_ms: 1,
+        };
+        let ctx = FlowContext {
+            tenant: "tenant",
+            flow_id: "flow",
+            node_id: Some("missing-op-hint"),
+            tool: None,
+            action: None,
+            session_id: None,
+            provider_id: None,
+            retry_config,
+            observer: None,
+            mocks: None,
+        };
+        let node = HostNode {
+            kind: NodeKind::Exec {
+                target_component: "qa.process".into(),
+            },
+            component: "component.exec".into(),
+            operation_in_mapping: Some("render".into()),
+            payload_expr: Value::Null,
+            routing: Routing::End,
+        };
+        let state = ExecutionState::new(Value::Null);
+        let payload = json!({ "component": "qa.process" });
+        let err = rt
+            .block_on(engine.execute_component_exec(
+                &ctx,
+                "missing-op-hint",
+                &node,
+                &state,
+                payload,
+                None,
+            ))
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("missing operation for node `missing-op-hint`"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            message.contains("Found operation in input.mapping (`render`)"),
+            "unexpected message: {message}"
         );
     }
 }
