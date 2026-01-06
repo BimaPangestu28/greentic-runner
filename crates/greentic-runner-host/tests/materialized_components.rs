@@ -223,6 +223,7 @@ fn component_path(component: &ComponentInfo) -> String {
 
 fn copy_fixture_components(root: &Path, components: &[ComponentInfo]) -> Result<()> {
     let fixtures = fixtures_pack_root().join("components");
+    let archive_path = fixtures_pack_root().join("runner-components.gtpack");
     for component in components {
         let relative_path = component_path(component);
         let target = root.join(&relative_path);
@@ -242,13 +243,36 @@ fn copy_fixture_components(root: &Path, components: &[ComponentInfo]) -> Result<
         if !source.exists() {
             source = fixtures.join(format!("{}.wasm", component.id.replace('.', "_")));
         }
-        fs::copy(&source, &target).with_context(|| {
+        if source.exists() {
+            fs::copy(&source, &target).with_context(|| {
+                format!(
+                    "failed to copy fixture component {} to {}",
+                    source.display(),
+                    target.display()
+                )
+            })?;
+            continue;
+        }
+
+        // CI does not check in the components dir; fall back to the archive payload.
+        let file = fs::File::open(&archive_path).with_context(|| {
             format!(
-                "failed to copy fixture component {} to {}",
-                source.display(),
-                target.display()
+                "failed to open fixture archive {} to read {}",
+                archive_path.display(),
+                relative_path
             )
         })?;
+        let mut archive = ZipArchive::new(file)?;
+        let mut entry = archive.by_name(&relative_path).with_context(|| {
+            format!(
+                "missing fixture component {} in archive {}",
+                relative_path,
+                archive_path.display()
+            )
+        })?;
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        fs::write(&target, &bytes)?;
     }
     Ok(())
 }
