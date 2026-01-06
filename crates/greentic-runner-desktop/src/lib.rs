@@ -1,10 +1,10 @@
 use anyhow::{Context, Result, anyhow};
-use greentic_pack::reader::{PackLoad, open_pack};
+use greentic_pack::reader::open_pack;
 use greentic_runner_host::RunnerWasiPolicy;
 use greentic_runner_host::config::{
     FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
 };
-use greentic_runner_host::pack::{FlowDescriptor, PackMetadata, PackRuntime};
+use greentic_runner_host::pack::{ComponentResolution, FlowDescriptor, PackMetadata, PackRuntime};
 use greentic_runner_host::runner::engine::{ExecutionObserver, FlowContext, FlowEngine, NodeEvent};
 pub use greentic_runner_host::runner::mocks::{
     HttpMock, HttpMockMode, KvMock, MocksConfig, SecretsMock, TelemetryMock, TimeMock, ToolsMock,
@@ -28,7 +28,6 @@ use time::format_description::well_known::Rfc3339;
 use tokio::runtime::Runtime;
 use tracing::{info, warn};
 use uuid::Uuid;
-use zip::ZipArchive;
 
 const PROVIDER_ID_DEV: &str = "greentic-dev";
 
@@ -112,6 +111,8 @@ pub struct RunOptions {
     pub mocks: MocksConfig,
     pub artifacts_dir: Option<PathBuf>,
     pub signing: SigningPolicy,
+    pub components_dir: Option<PathBuf>,
+    pub components_map: HashMap<String, PathBuf>,
 }
 
 impl Default for RunOptions {
@@ -132,6 +133,8 @@ impl fmt::Debug for RunOptions {
             .field("mocks", &self.mocks)
             .field("artifacts_dir", &self.artifacts_dir)
             .field("signing", &self.signing)
+            .field("components_dir", &self.components_dir)
+            .field("components_map_len", &self.components_map.len())
             .finish()
     }
 }
@@ -216,6 +219,8 @@ pub fn desktop_defaults() -> RunOptions {
         mocks: MocksConfig::default(),
         artifacts_dir: None,
         signing: SigningPolicy::DevOk,
+        components_dir: None,
+        components_map: HashMap::new(),
     }
 }
 
@@ -242,31 +247,41 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
     let mock_sink: Arc<dyn MockEventSink> = recorder.clone();
     mock_layer.register_sink(mock_sink);
 
-    let mut pack_load: Option<PackLoad> = None;
-    match open_pack(&pack_path, to_reader_policy(opts.signing)) {
-        Ok(load) => {
-            let meta = &load.manifest.meta;
-            recorder.update_pack_metadata(PackMetadata {
-                pack_id: meta.pack_id.clone(),
-                version: meta.version.to_string(),
-                entry_flows: meta.entry_flows.clone(),
-                secret_requirements: Vec::new(),
-            });
-            pack_load = Some(load);
-        }
-        Err(err) => {
-            recorder.record_verify_event("error", &err.message)?;
-            if opts.signing == SigningPolicy::DevOk && is_signature_error(&err.message) {
-                warn!(error = %err.message, "continuing despite signature error (dev policy)");
-            } else {
-                return Err(anyhow!("pack verification failed: {}", err.message));
+    if pack_path.is_file() {
+        match open_pack(&pack_path, to_reader_policy(opts.signing)) {
+            Ok(load) => {
+                let meta = &load.manifest.meta;
+                recorder.update_pack_metadata(PackMetadata {
+                    pack_id: meta.pack_id.clone(),
+                    version: meta.version.to_string(),
+                    entry_flows: meta.entry_flows.clone(),
+                    secret_requirements: Vec::new(),
+                });
+            }
+            Err(err) => {
+                recorder.record_verify_event("error", &err.message)?;
+                if opts.signing == SigningPolicy::DevOk && is_signature_error(&err.message) {
+                    warn!(error = %err.message, "continuing despite signature error (dev policy)");
+                } else {
+                    return Err(anyhow!("pack verification failed: {}", err.message));
+                }
             }
         }
+    } else {
+        tracing::debug!(
+            path = %pack_path.display(),
+            "skipping pack verification for directory input"
+        );
     }
 
     let host_config = Arc::new(build_host_config(&resolved_profile, &directories));
-    let component_artifact =
-        resolve_component_artifact(&pack_path, pack_load.as_ref(), &directories)?;
+    let mut component_resolution = ComponentResolution::default();
+    if let Some(dir) = opts.components_dir.clone() {
+        component_resolution.materialized_root = Some(dir);
+    } else if pack_path.is_dir() {
+        component_resolution.materialized_root = Some(pack_path.clone());
+    }
+    component_resolution.overrides = opts.components_map.clone();
     let archive_source = if pack_path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -283,7 +298,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
     let secrets_manager = default_manager();
     let pack = Arc::new(
         PackRuntime::load(
-            &component_artifact,
+            &pack_path,
             Arc::clone(&host_config),
             Some(Arc::clone(&mock_layer)),
             archive_source.map(|p| p as &Path),
@@ -293,9 +308,10 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
             secrets_manager,
             host_config.oauth_broker_config(),
             false,
+            component_resolution,
         )
         .await
-        .with_context(|| format!("failed to load pack {}", component_artifact.display()))?,
+        .with_context(|| format!("failed to load pack {}", pack_path.display()))?,
     );
     recorder.update_pack_metadata(pack.metadata().clone());
 
@@ -450,58 +466,6 @@ fn to_reader_policy(policy: SigningPolicy) -> greentic_pack::reader::SigningPoli
         SigningPolicy::Strict => greentic_pack::reader::SigningPolicy::Strict,
         SigningPolicy::DevOk => greentic_pack::reader::SigningPolicy::DevOk,
     }
-}
-
-fn resolve_component_artifact(
-    pack_path: &Path,
-    load: Option<&PackLoad>,
-    dirs: &RunDirectories,
-) -> Result<PathBuf> {
-    if pack_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("wasm"))
-        .unwrap_or(false)
-    {
-        return Ok(pack_path.to_path_buf());
-    }
-
-    let entry = find_component_entry(pack_path, load)?;
-    let file =
-        File::open(pack_path).with_context(|| format!("failed to open {}", pack_path.display()))?;
-    let mut archive = ZipArchive::new(file)
-        .with_context(|| format!("{} is not a valid gtpack", pack_path.display()))?;
-    let mut component = archive
-        .by_name(&entry)
-        .with_context(|| format!("component {entry} missing from pack"))?;
-    let out_path = dirs.root.join("component.wasm");
-    let mut out_file = File::create(&out_path)
-        .with_context(|| format!("failed to create {}", out_path.display()))?;
-    std::io::copy(&mut component, &mut out_file)
-        .with_context(|| format!("failed to extract component {entry}"))?;
-    Ok(out_path)
-}
-
-fn find_component_entry(pack_path: &Path, load: Option<&PackLoad>) -> Result<String> {
-    if let Some(load) = load
-        && let Some(component) = load.manifest.components.first()
-    {
-        return Ok(component.file_wasm.clone());
-    }
-
-    let file =
-        File::open(pack_path).with_context(|| format!("failed to open {}", pack_path.display()))?;
-    let mut archive = ZipArchive::new(file)
-        .with_context(|| format!("{} is not a valid gtpack", pack_path.display()))?;
-    for index in 0..archive.len() {
-        let entry = archive
-            .by_index(index)
-            .with_context(|| format!("failed to read entry #{index}"))?;
-        if entry.name().ends_with(".wasm") {
-            return Ok(entry.name().to_string());
-        }
-    }
-    Err(anyhow!("pack does not contain a wasm component"))
 }
 
 fn resolve_profile(profile: &Profile, ctx: &TenantContext) -> ResolvedProfile {

@@ -134,6 +134,9 @@ secrets are wired today.
     - `PackManager` orchestrates the resolver registry (filesystem, HTTPS, OCI,
       S3, GCS, Azure blob), downloads artifacts, writes them into the cache, and
       invokes `PackVerifier` when trust keys are configured.
+    - `PackRuntime::load` can also run a materialized pack directory (manifest +
+      `components/<id>.wasm`) and will prefer those component artifacts over
+      embedded archive entries before erroring on missing components.
     - `Index`/`PackEntry`/`TenantPacks` mirror the JSON index schema that maps
       tenants to `main_pack` + overlay list.
     - `ResolvedSet` is what the watcher converts into ready-to-load packs.

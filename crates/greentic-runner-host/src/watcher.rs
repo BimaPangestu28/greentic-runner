@@ -11,7 +11,7 @@ use crate::HostConfig;
 use crate::engine::host::{SessionHost, StateHost};
 use crate::host::RunnerHost;
 use crate::http::health::HealthState;
-use crate::pack::PackRuntime;
+use crate::pack::{ComponentResolution, PackRuntime};
 use crate::runner::adapt_timer;
 use crate::runtime::{ActivePacks, TenantRuntime};
 use crate::secrets::DynSecretsManager;
@@ -160,6 +160,7 @@ async fn reload_once(
                 Arc::clone(&secrets_manager),
                 oauth_config.clone(),
                 true,
+                ComponentResolution::default(),
             )
             .await
             .with_context(|| format!("failed to load pack for tenant {tenant}"))?,
@@ -179,6 +180,7 @@ async fn reload_once(
                     Arc::clone(&secrets_manager),
                     oauth_config.clone(),
                     true,
+                    ComponentResolution::default(),
                 )
                 .await
                 .with_context(|| {

@@ -68,6 +68,10 @@ Pack ingestion is driven by a JSON index (see `examples/index.json`). Each tenan
 
 During a reload the watcher resolves each locator (filesystem, HTTPS, OCI, S3, GCS, Azure blob), verifies digests/signatures, caches artifacts, and constructs a `TenantRuntime` that loads the main pack plus overlays in order. Overlay changes are safe to deploy independently—`crates/tests/tests/host_integration.rs` includes regression coverage.
 
+### Materialized packs
+
+Runner can also execute a materialized pack directory (contains `manifest.cbor`, flows/templates, and `components/<id>.wasm`) or a `.gtpack` paired with local component files. Component resolution now prefers explicit overrides, then the materialized directory, and finally embedded archive entries; missing components raise a clear error. The desktop CLI exposes `--components-dir` / `--components-map` so distributor-produced layouts can run without the runner fetching OCI components itself.
+
 ### Pause & resume semantics
 
 Packs can pause mid-flow by emitting the `session.wait` component. The host persists the `FlowSnapshot` (current node pointer + execution state) into `greentic-session`. The next inbound activity for the same canonical session key (`tenant:provider:channel:conversation:user`) automatically resumes the stored snapshot, continues execution, and clears the entry when the flow completes. This makes multi-message LLM flows and human-in-the-loop approvals idempotent without bespoke session wiring.

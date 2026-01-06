@@ -5,7 +5,7 @@ use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::config::{
     FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
 };
-use greentic_runner_host::pack::PackRuntime;
+use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
 use greentic_runner_host::runner::engine::{FlowContext, FlowEngine, FlowStatus};
 use greentic_runner_host::runner::flow_adapter::{FlowIR, NodeIR, RouteIR};
 use greentic_types::{
@@ -285,6 +285,7 @@ nodes:
         greentic_runner_host::secrets::default_manager(),
         None,
         false,
+        ComponentResolution::default(),
     ))?);
     let engine = rt.block_on(FlowEngine::new(
         vec![Arc::clone(&pack)],
@@ -367,6 +368,7 @@ nodes:
         greentic_runner_host::secrets::default_manager(),
         None,
         false,
+        ComponentResolution::default(),
     ))?);
     let engine = rt.block_on(FlowEngine::new(
         vec![Arc::clone(&pack)],

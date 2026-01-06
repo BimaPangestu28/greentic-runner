@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use greentic_runner_host::pack::PackRuntime;
+use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
 use greentic_runner_host::runner::engine::{FlowContext, FlowEngine};
 use greentic_runner_host::secrets::default_manager;
 use greentic_runner_host::{
@@ -60,6 +60,7 @@ async fn provider_invoke_echoes_payload() -> Result<()> {
             default_manager(),
             None,
             false,
+            ComponentResolution::default(),
         )
         .await?,
     );
@@ -135,6 +136,7 @@ async fn provider_invoke_supports_messaging_secrets_events() -> Result<()> {
             default_manager(),
             None,
             false,
+            ComponentResolution::default(),
         )
         .await?,
     );
@@ -220,6 +222,7 @@ async fn component_exec_carries_operation_from_flow() -> Result<()> {
             default_manager(),
             None,
             false,
+            ComponentResolution::default(),
         )
         .await?,
     );
@@ -235,6 +238,7 @@ async fn component_exec_carries_operation_from_flow() -> Result<()> {
             default_manager(),
             None,
             false,
+            ComponentResolution::default(),
         )
         .await?,
     );

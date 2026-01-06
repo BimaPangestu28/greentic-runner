@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -102,6 +102,14 @@ struct PackComponent {
     #[allow(dead_code)]
     version: String,
     component: Component,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ComponentResolution {
+    /// Root of a materialized pack directory containing `manifest.cbor` and `components/`.
+    pub materialized_root: Option<PathBuf>,
+    /// Explicit overrides mapping component id -> wasm path.
+    pub overrides: HashMap<String, PathBuf>,
 }
 
 fn build_blocking_client() -> BlockingClient {
@@ -671,6 +679,35 @@ fn load_manifest_and_flows(path: &Path) -> Result<ManifestLoad> {
     }
 }
 
+fn load_manifest_and_flows_from_dir(root: &Path) -> Result<ManifestLoad> {
+    let manifest_path = root.join("manifest.cbor");
+    let bytes = std::fs::read(&manifest_path)
+        .with_context(|| format!("missing manifest.cbor in {}", root.display()))?;
+    match decode_pack_manifest(&bytes) {
+        Ok(manifest) => {
+            let cache = PackFlows::from_manifest(manifest.clone());
+            Ok(ManifestLoad::New {
+                manifest: Box::new(manifest),
+                flows: cache,
+            })
+        }
+        Err(err) => {
+            tracing::debug!(
+                error = %err,
+                pack = %root.display(),
+                "decode_pack_manifest failed for materialized pack; trying legacy manifest"
+            );
+            let legacy: legacy_pack::PackManifest = serde_cbor::from_slice(&bytes)
+                .context("failed to decode legacy pack manifest from manifest.cbor")?;
+            let flows = load_legacy_flows_from_dir(root, &legacy)?;
+            Ok(ManifestLoad::Legacy {
+                manifest: Box::new(legacy),
+                flows,
+            })
+        }
+    }
+}
+
 fn load_legacy_flows(
     archive: &mut ZipArchive<File>,
     manifest: &legacy_pack::PackManifest,
@@ -683,6 +720,51 @@ fn load_legacy_flows(
             .with_context(|| format!("missing flow json {}", entry.file_json))?;
         let doc: FlowDoc = serde_json::from_slice(&bytes)
             .with_context(|| format!("failed to decode flow doc {}", entry.file_json))?;
+        let normalized = normalize_flow_doc(doc);
+        let flow_ir = flow_doc_to_ir(normalized)?;
+        let flow = flow_ir_to_flow(flow_ir)?;
+
+        descriptors.push(FlowDescriptor {
+            id: entry.id.clone(),
+            flow_type: entry.kind.clone(),
+            profile: manifest.meta.pack_id.clone(),
+            version: manifest.meta.version.to_string(),
+            description: None,
+        });
+        flows.insert(entry.id.clone(), flow);
+    }
+
+    let mut entry_flows = manifest.meta.entry_flows.clone();
+    if entry_flows.is_empty() {
+        entry_flows = manifest.flows.iter().map(|f| f.id.clone()).collect();
+    }
+    let metadata = PackMetadata {
+        pack_id: manifest.meta.pack_id.clone(),
+        version: manifest.meta.version.to_string(),
+        entry_flows,
+        secret_requirements: Vec::new(),
+    };
+
+    Ok(PackFlows {
+        descriptors,
+        flows,
+        metadata,
+    })
+}
+
+fn load_legacy_flows_from_dir(
+    root: &Path,
+    manifest: &legacy_pack::PackManifest,
+) -> Result<PackFlows> {
+    let mut flows = HashMap::new();
+    let mut descriptors = Vec::new();
+
+    for entry in &manifest.flows {
+        let path = root.join(&entry.file_json);
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("missing flow json {}", path.display()))?;
+        let doc: FlowDoc = serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to decode flow doc {}", path.display()))?;
         let normalized = normalize_flow_doc(doc);
         let flow_ir = flow_doc_to_ir(normalized)?;
         let flow = flow_ir_to_flow(flow_ir)?;
@@ -831,43 +913,65 @@ impl PackRuntime {
         secrets: DynSecretsManager,
         oauth_config: Option<OAuthBrokerConfig>,
         verify_archive: bool,
+        component_resolution: ComponentResolution,
     ) -> Result<Self> {
         let path = path.as_ref();
         let (_pack_root, safe_path) = normalize_pack_path(path)?;
-        let is_component = safe_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("wasm"))
+        let path_meta = std::fs::metadata(&safe_path).ok();
+        let is_dir = path_meta
+            .as_ref()
+            .map(|meta| meta.is_dir())
             .unwrap_or(false);
+        let is_component = !is_dir
+            && safe_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("wasm"))
+                .unwrap_or(false);
         let archive_hint_path = if let Some(source) = archive_source {
             let (_, normalized) = normalize_pack_path(source)?;
             Some(normalized)
-        } else if is_component {
+        } else if is_component || is_dir {
             None
         } else {
             Some(safe_path.clone())
         };
         let archive_hint = archive_hint_path.as_deref();
         if verify_archive {
-            let verify_target = archive_hint.unwrap_or(&safe_path);
-            verify::verify_pack(verify_target).await?;
-            tracing::info!(pack_path = %verify_target.display(), "pack verification complete");
+            if let Some(verify_target) = archive_hint.and_then(|p| {
+                std::fs::metadata(p)
+                    .ok()
+                    .filter(|meta| meta.is_file())
+                    .map(|_| p)
+            }) {
+                verify::verify_pack(verify_target).await?;
+                tracing::info!(pack_path = %verify_target.display(), "pack verification complete");
+            } else {
+                tracing::debug!("skipping archive verification (no archive source)");
+            }
         }
         let engine = Engine::default();
-        let wasm_bytes = fs::read(&safe_path).await?;
-        let mut metadata = PackMetadata::from_wasm(&wasm_bytes)
-            .unwrap_or_else(|| PackMetadata::fallback(&safe_path));
+        let mut metadata = PackMetadata::fallback(&safe_path);
         let mut manifest = None;
         let mut legacy_manifest: Option<Box<legacy_pack::PackManifest>> = None;
-        let flows = if let Some(archive_path) = archive_hint {
-            match load_manifest_and_flows(archive_path) {
+        let mut flows = None;
+        let materialized_root = component_resolution.materialized_root.clone().or_else(|| {
+            if is_dir {
+                Some(safe_path.clone())
+            } else {
+                None
+            }
+        });
+
+        if let Some(root) = materialized_root.as_ref() {
+            match load_manifest_and_flows_from_dir(root) {
                 Ok(ManifestLoad::New {
                     manifest: m,
                     flows: cache,
                 }) => {
                     metadata = cache.metadata.clone();
                     manifest = Some(*m);
-                    Some(cache)
+                    flows = Some(cache);
                 }
                 Ok(ManifestLoad::Legacy {
                     manifest: m,
@@ -875,37 +979,44 @@ impl PackRuntime {
                 }) => {
                     metadata = cache.metadata.clone();
                     legacy_manifest = Some(m);
-                    Some(cache)
+                    flows = Some(cache);
+                }
+                Err(err) => {
+                    warn!(error = %err, pack = %root.display(), "failed to parse materialized pack manifest");
+                }
+            }
+        }
+
+        if manifest.is_none()
+            && legacy_manifest.is_none()
+            && let Some(archive_path) = archive_hint
+        {
+            match load_manifest_and_flows(archive_path) {
+                Ok(ManifestLoad::New {
+                    manifest: m,
+                    flows: cache,
+                }) => {
+                    metadata = cache.metadata.clone();
+                    manifest = Some(*m);
+                    flows = Some(cache);
+                }
+                Ok(ManifestLoad::Legacy {
+                    manifest: m,
+                    flows: cache,
+                }) => {
+                    metadata = cache.metadata.clone();
+                    legacy_manifest = Some(m);
+                    flows = Some(cache);
                 }
                 Err(err) => {
                     warn!(error = %err, pack = %archive_path.display(), "failed to parse pack manifest; skipping flows");
-                    None
                 }
             }
-        } else {
-            None
-        };
-        let components = if let Some(archive_path) = archive_hint {
-            if let Some(new_manifest) = manifest.as_ref() {
-                match load_components_from_archive(&engine, archive_path, Some(new_manifest)) {
-                    Ok(map) => map,
-                    Err(err) => {
-                        warn!(error = %err, pack = %archive_path.display(), "failed to load components from archive");
-                        HashMap::new()
-                    }
-                }
-            } else if let Some(legacy) = legacy_manifest.as_ref() {
-                match load_legacy_components_from_archive(&engine, archive_path, legacy) {
-                    Ok(map) => map,
-                    Err(err) => {
-                        warn!(error = %err, pack = %archive_path.display(), "failed to load components from archive");
-                        HashMap::new()
-                    }
-                }
-            } else {
-                HashMap::new()
-            }
-        } else if is_component {
+        }
+        let components = if is_component {
+            let wasm_bytes = fs::read(&safe_path).await?;
+            metadata = PackMetadata::from_wasm(&wasm_bytes)
+                .unwrap_or_else(|| PackMetadata::fallback(&safe_path));
             let name = safe_path
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
@@ -922,7 +1033,58 @@ impl PackRuntime {
             );
             map
         } else {
-            HashMap::new()
+            let specs = component_specs(manifest.as_ref(), legacy_manifest.as_deref());
+            if specs.is_empty() {
+                HashMap::new()
+            } else {
+                let mut loaded = HashMap::new();
+                let mut missing: HashSet<String> =
+                    specs.iter().map(|spec| spec.id.clone()).collect();
+                let mut searched = Vec::new();
+
+                if !component_resolution.overrides.is_empty() {
+                    load_components_from_overrides(
+                        &engine,
+                        &component_resolution.overrides,
+                        &specs,
+                        &mut missing,
+                        &mut loaded,
+                    )?;
+                    searched.push("override map".to_string());
+                }
+
+                if let Some(root) = materialized_root.as_ref() {
+                    load_components_from_dir(&engine, root, &specs, &mut missing, &mut loaded)?;
+                    searched.push(format!("components dir {}", root.display()));
+                }
+
+                if let Some(archive_path) = archive_hint {
+                    load_components_from_archive(
+                        &engine,
+                        archive_path,
+                        &specs,
+                        &mut missing,
+                        &mut loaded,
+                    )?;
+                    searched.push(format!("archive {}", archive_path.display()));
+                }
+
+                if !missing.is_empty() {
+                    let missing_list = missing.into_iter().collect::<Vec<_>>().join(", ");
+                    let sources = if searched.is_empty() {
+                        "no component sources".to_string()
+                    } else {
+                        searched.join(", ")
+                    };
+                    bail!(
+                        "components missing: {}; looked in {}",
+                        missing_list,
+                        sources
+                    );
+                }
+
+                loaded
+            }
         };
         let http_client = Arc::clone(&HTTP_CLIENT);
         Ok(Self {
@@ -986,6 +1148,7 @@ impl PackRuntime {
                 self.secrets.clone(),
                 self.oauth_config.clone(),
                 false,
+                ComponentResolution::default(),
             )
             .await?,
         );
@@ -1405,6 +1568,162 @@ fn infer_component_exec(
     (component_ref.to_string(), default_op, payload.clone(), None)
 }
 
+#[derive(Clone, Debug)]
+struct ComponentSpec {
+    id: String,
+    version: String,
+    legacy_path: Option<String>,
+}
+
+fn component_specs(
+    manifest: Option<&greentic_types::PackManifest>,
+    legacy_manifest: Option<&legacy_pack::PackManifest>,
+) -> Vec<ComponentSpec> {
+    if let Some(manifest) = manifest {
+        return manifest
+            .components
+            .iter()
+            .map(|entry| ComponentSpec {
+                id: entry.id.as_str().to_string(),
+                version: entry.version.to_string(),
+                legacy_path: None,
+            })
+            .collect();
+    }
+    if let Some(legacy_manifest) = legacy_manifest {
+        return legacy_manifest
+            .components
+            .iter()
+            .map(|entry| ComponentSpec {
+                id: entry.name.clone(),
+                version: entry.version.to_string(),
+                legacy_path: Some(entry.file_wasm.clone()),
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+fn component_path_for_spec(root: &Path, spec: &ComponentSpec) -> PathBuf {
+    if let Some(path) = &spec.legacy_path {
+        return root.join(path);
+    }
+    root.join("components").join(format!("{}.wasm", spec.id))
+}
+
+fn load_components_from_overrides(
+    engine: &Engine,
+    overrides: &HashMap<String, PathBuf>,
+    specs: &[ComponentSpec],
+    missing: &mut HashSet<String>,
+    into: &mut HashMap<String, PackComponent>,
+) -> Result<()> {
+    for spec in specs {
+        if !missing.contains(&spec.id) {
+            continue;
+        }
+        let Some(path) = overrides.get(&spec.id) else {
+            continue;
+        };
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("failed to read override component {}", path.display()))?;
+        let component = Component::from_binary(engine, &bytes).with_context(|| {
+            format!(
+                "failed to compile component {} from override {}",
+                spec.id,
+                path.display()
+            )
+        })?;
+        into.insert(
+            spec.id.clone(),
+            PackComponent {
+                name: spec.id.clone(),
+                version: spec.version.clone(),
+                component,
+            },
+        );
+        missing.remove(&spec.id);
+    }
+    Ok(())
+}
+
+fn load_components_from_dir(
+    engine: &Engine,
+    root: &Path,
+    specs: &[ComponentSpec],
+    missing: &mut HashSet<String>,
+    into: &mut HashMap<String, PackComponent>,
+) -> Result<()> {
+    for spec in specs {
+        if !missing.contains(&spec.id) {
+            continue;
+        }
+        let path = component_path_for_spec(root, spec);
+        if !path.exists() {
+            tracing::debug!(component = %spec.id, path = %path.display(), "materialized component missing; will try other sources");
+            continue;
+        }
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("failed to read component {}", path.display()))?;
+        let component = Component::from_binary(engine, &bytes).with_context(|| {
+            format!(
+                "failed to compile component {} from {}",
+                spec.id,
+                path.display()
+            )
+        })?;
+        into.insert(
+            spec.id.clone(),
+            PackComponent {
+                name: spec.id.clone(),
+                version: spec.version.clone(),
+                component,
+            },
+        );
+        missing.remove(&spec.id);
+    }
+    Ok(())
+}
+
+fn load_components_from_archive(
+    engine: &Engine,
+    path: &Path,
+    specs: &[ComponentSpec],
+    missing: &mut HashSet<String>,
+    into: &mut HashMap<String, PackComponent>,
+) -> Result<()> {
+    let mut archive = ZipArchive::new(File::open(path)?)
+        .with_context(|| format!("{} is not a valid gtpack", path.display()))?;
+    for spec in specs {
+        if !missing.contains(&spec.id) {
+            continue;
+        }
+        let file_name = spec
+            .legacy_path
+            .clone()
+            .unwrap_or_else(|| format!("components/{}.wasm", spec.id));
+        let bytes = match read_entry(&mut archive, &file_name) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                warn!(component = %spec.id, pack = %path.display(), error = %err, "component entry missing in pack archive");
+                continue;
+            }
+        };
+        let component = Component::from_binary(engine, &bytes)
+            .with_context(|| format!("failed to compile component {}", spec.id))?;
+        into.insert(
+            spec.id.clone(),
+            PackComponent {
+                name: spec.id.clone(),
+                version: spec.version.clone(),
+                component,
+            },
+        );
+        missing.remove(&spec.id);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1456,59 +1775,6 @@ mod tests {
         let input = payload.get("input").unwrap();
         assert_eq!(input, &json!({ "template": "Hi {{name}}" }));
     }
-}
-
-fn load_components_from_archive(
-    engine: &Engine,
-    path: &Path,
-    manifest: Option<&greentic_types::PackManifest>,
-) -> Result<HashMap<String, PackComponent>> {
-    let mut archive = ZipArchive::new(File::open(path)?)
-        .with_context(|| format!("{} is not a valid gtpack", path.display()))?;
-    let mut components = HashMap::new();
-    if let Some(manifest) = manifest {
-        for entry in &manifest.components {
-            let file_name = format!("components/{}.wasm", entry.id.as_str());
-            let bytes = read_entry(&mut archive, &file_name)
-                .with_context(|| format!("missing component {}", file_name))?;
-            let component = Component::from_binary(engine, &bytes)
-                .with_context(|| format!("failed to compile component {}", entry.id.as_str()))?;
-            components.insert(
-                entry.id.as_str().to_string(),
-                PackComponent {
-                    name: entry.id.as_str().to_string(),
-                    version: entry.version.to_string(),
-                    component,
-                },
-            );
-        }
-    }
-    Ok(components)
-}
-
-fn load_legacy_components_from_archive(
-    engine: &Engine,
-    path: &Path,
-    manifest: &legacy_pack::PackManifest,
-) -> Result<HashMap<String, PackComponent>> {
-    let mut archive = ZipArchive::new(File::open(path)?)
-        .with_context(|| format!("{} is not a valid gtpack", path.display()))?;
-    let mut components = HashMap::new();
-    for entry in &manifest.components {
-        let bytes = read_entry(&mut archive, &entry.file_wasm)
-            .with_context(|| format!("missing component {}", entry.file_wasm))?;
-        let component = Component::from_binary(engine, &bytes)
-            .with_context(|| format!("failed to compile component {}", entry.name))?;
-        components.insert(
-            entry.name.clone(),
-            PackComponent {
-                name: entry.name.clone(),
-                version: entry.version.to_string(),
-                component,
-            },
-        );
-    }
-    Ok(components)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

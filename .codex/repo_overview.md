@@ -35,9 +35,11 @@
 - **Location:** `crates/tests/tests/weather_smoke.rs:6`  
   **Status:** Ignored smoke test (env-gated)  
   **Short description:** Spawns the `greentic-runner` binary against a user-supplied pack + bindings and hits `/webhook/{WEATHER_FLOW_ID}`; requires `WEATHER_PACK_PATH` and optional `WEATHER_BINDINGS_PATH`/`WEATHER_WEBHOOK_PAYLOAD`/`TELEGRAM_BOT_TOKEN`.
+- **Topic:** Materialized pack support (runner-host)  
+  **Notes:** Runner now resolves pre-materialized components/flows ahead of embedded archive contents and falls back deterministically; integration tests added in `crates/greentic-runner-host/tests/materialized_components.rs` exercise materialized vs archive precedence and missing-component errors.
 
 ## 4. Broken, Failing, or Conflicting Areas
-- No known broken areas after updating `PackMeta` initializers; `cargo test -p runner-core --tests --examples` now passes.
+- Local `ci/local_check.sh` passes fmt/clippy/tests but the final cargo package dry-run fails offline (`download of config.json failed`, crates.io DNS unreachable).
 
 ## 5. Notes for Future Work
-- Run the full workspace test suite to confirm broader coverage beyond runner-core.
+- Re-run `ci/local_check.sh` packaging step when network access to crates.io is available, or skip the publish dry-run if acceptable.

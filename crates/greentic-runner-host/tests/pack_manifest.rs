@@ -8,7 +8,7 @@ use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::config::{
     FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
 };
-use greentic_runner_host::pack::PackRuntime;
+use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
 use greentic_runner_host::wasi::RunnerWasiPolicy;
 use greentic_types::{
     ComponentCapabilities, ComponentManifest, ComponentProfiles, FlowKind, PackFlowEntry, PackKind,
@@ -237,6 +237,7 @@ fn gtpack_manifest_fast_path_invokes_components() -> Result<()> {
         greentic_runner_host::secrets::default_manager(),
         None,
         false,
+        ComponentResolution::default(),
     ))?);
 
     let flows = rt.block_on(runtime.list_flows())?;

@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use crate::config::HostConfig;
 use crate::engine::host::{SessionHost, StateHost};
 use crate::engine::runtime::StateMachineRuntime;
-use crate::pack::PackRuntime;
+use crate::pack::{ComponentResolution, PackRuntime};
 use crate::runner::engine::FlowEngine;
 use crate::runner::mocks::MockLayer;
 use crate::secrets::{DynSecretsManager, read_secret_blocking};
@@ -112,6 +112,7 @@ impl TenantRuntime {
                 Arc::clone(&secrets_manager),
                 oauth_config.clone(),
                 true,
+                ComponentResolution::default(),
             )
             .await
             .with_context(|| {

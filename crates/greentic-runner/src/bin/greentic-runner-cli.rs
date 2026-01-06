@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -17,6 +18,14 @@ struct Cli {
     /// Path to the pack (.gtpack or directory)
     #[arg(long, value_name = "PATH")]
     pack: PathBuf,
+
+    /// Optional directory containing materialized components (`components/<id>.wasm`)
+    #[arg(long, value_name = "DIR")]
+    components_dir: Option<PathBuf>,
+
+    /// JSON file mapping component id -> local wasm path (sidecar map)
+    #[arg(long, value_name = "FILE")]
+    components_map: Option<PathBuf>,
 
     /// Optional entry flow id (defaults to pack manifest)
     #[arg(long)]
@@ -64,6 +73,25 @@ fn parse_input(cli: &Cli) -> Result<Value> {
     serde_json::from_str(&cli.input).context("failed to parse JSON from --input")
 }
 
+fn parse_components_map(cli: &Cli) -> Result<HashMap<String, PathBuf>> {
+    if let Some(path) = &cli.components_map {
+        let bytes = fs::read(path)
+            .with_context(|| format!("failed to read components map {}", path.display()))?;
+        let raw: HashMap<String, String> = serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "failed to parse components map JSON from {}",
+                path.display()
+            )
+        })?;
+        let mut map = HashMap::new();
+        for (id, value) in raw {
+            map.insert(id, PathBuf::from(value));
+        }
+        return Ok(map);
+    }
+    Ok(HashMap::new())
+}
+
 fn build_profile(cli: &Cli) -> Profile {
     let mut dev = DevProfile::default();
     if let Some(tenant) = &cli.tenant {
@@ -107,6 +135,7 @@ fn main() -> Result<()> {
 
     let profile = build_profile(&cli);
     let ctx = build_ctx(&cli);
+    let components_map = parse_components_map(&cli)?;
 
     let runner = Runner::new().configure(|opts: &mut RunOptions| {
         opts.profile = profile.clone();
@@ -115,6 +144,8 @@ fn main() -> Result<()> {
         opts.ctx = ctx.clone();
         opts.artifacts_dir = cli.artifacts_dir.clone();
         opts.signing = signing;
+        opts.components_dir = cli.components_dir.clone();
+        opts.components_map = components_map.clone();
     });
 
     let result = runner
