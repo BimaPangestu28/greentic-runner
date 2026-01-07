@@ -64,6 +64,8 @@ pub struct HostNode {
     kind: NodeKind,
     /// Backwards-compatible component label for observers/transcript.
     pub component: String,
+    component_id: String,
+    operation_name: Option<String>,
     operation_in_mapping: Option<String>,
     payload_expr: Value,
     routing: Routing,
@@ -84,6 +86,18 @@ enum EmitKind {
     Log,
     Response,
     Other(String),
+}
+
+struct ComponentOverrides<'a> {
+    component: Option<&'a str>,
+    operation: Option<&'a str>,
+}
+
+struct ComponentCall {
+    component_ref: String,
+    operation: String,
+    input: Value,
+    config: Value,
 }
 
 impl FlowExecution {
@@ -372,19 +386,15 @@ impl FlowEngine {
                     node,
                     state,
                     payload,
-                    Some(target_component.as_str()),
+                    ComponentOverrides {
+                        component: Some(target_component.as_str()),
+                        operation: node.operation_name.as_deref(),
+                    },
                 )
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::PackComponent { component_ref } => self
-                .execute_component_exec(
-                    ctx,
-                    node_id,
-                    node,
-                    state,
-                    payload,
-                    Some(component_ref.as_str()),
-                )
+                .execute_component_call(ctx, node_id, node, state, payload, component_ref.as_str())
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::FlowCall => self
@@ -468,7 +478,7 @@ impl FlowEngine {
         node: &HostNode,
         state: &ExecutionState,
         payload: Value,
-        component_override: Option<&str>,
+        overrides: ComponentOverrides<'_>,
     ) -> Result<NodeOutput> {
         #[derive(Deserialize)]
         struct ComponentPayload {
@@ -484,38 +494,71 @@ impl FlowEngine {
 
         let payload: ComponentPayload =
             serde_json::from_value(payload).context("invalid payload for component.exec")?;
-        let component_ref = component_override
+        let component_ref = overrides
+            .component
             .map(str::to_string)
             .or_else(|| payload.component.filter(|v| !v.trim().is_empty()))
             .with_context(|| "component.exec requires a component_ref")?;
-        let component_label = node.component.as_str();
-        let operation = match payload.operation.filter(|v| !v.trim().is_empty()) {
-            Some(op) => op,
-            None => {
-                let mut message = format!(
-                    "missing operation for node `{}` (component `{}`); expected node.component.operation to be set",
-                    node_id, component_label,
-                );
-                if let Some(found) = &node.operation_in_mapping {
-                    message.push_str(&format!(
-                        ". Found operation in input.mapping (`{}`) but this is not used; pack compiler must preserve node.component.operation.",
-                        found
-                    ));
-                }
-                bail!(message);
-            }
+        let operation = resolve_component_operation(
+            node_id,
+            node.component_id.as_str(),
+            payload.operation,
+            overrides.operation,
+            node.operation_in_mapping.as_deref(),
+        )?;
+        let call = ComponentCall {
+            component_ref,
+            operation,
+            input: payload.input,
+            config: payload.config,
         };
-        let mut input = payload.input;
-        if let Value::Object(mut map) = input {
+
+        self.invoke_component_call(ctx, node_id, state, call).await
+    }
+
+    async fn execute_component_call(
+        &self,
+        ctx: &FlowContext<'_>,
+        node_id: &str,
+        node: &HostNode,
+        state: &ExecutionState,
+        payload: Value,
+        component_ref: &str,
+    ) -> Result<NodeOutput> {
+        let payload_operation = extract_operation_from_mapping(&payload);
+        let (input, config) = split_operation_payload(payload);
+        let operation = resolve_component_operation(
+            node_id,
+            node.component_id.as_str(),
+            payload_operation,
+            node.operation_name.as_deref(),
+            node.operation_in_mapping.as_deref(),
+        )?;
+        let call = ComponentCall {
+            component_ref: component_ref.to_string(),
+            operation,
+            input,
+            config,
+        };
+        self.invoke_component_call(ctx, node_id, state, call).await
+    }
+
+    async fn invoke_component_call(
+        &self,
+        ctx: &FlowContext<'_>,
+        node_id: &str,
+        state: &ExecutionState,
+        mut call: ComponentCall,
+    ) -> Result<NodeOutput> {
+        if let Value::Object(ref mut map) = call.input {
             map.entry("state".to_string())
                 .or_insert_with(|| state.context());
-            input = Value::Object(map);
         }
-        let input_json = serde_json::to_string(&input)?;
-        let config_json = if payload.config.is_null() {
+        let input_json = serde_json::to_string(&call.input)?;
+        let config_json = if call.config.is_null() {
             None
         } else {
-            Some(serde_json::to_string(&payload.config)?)
+            Some(serde_json::to_string(&call.config)?)
         };
 
         let pack_idx = *self
@@ -526,9 +569,9 @@ impl FlowEngine {
         let exec_ctx = component_exec_ctx(ctx, node_id);
         let value = pack
             .invoke_component(
-                &component_ref,
+                call.component_ref.as_str(),
                 exec_ctx,
-                &operation,
+                call.operation.as_str(),
                 config_json,
                 input_json,
             )
@@ -824,6 +867,7 @@ impl From<Flow> for HostFlow {
 impl From<Node> for HostNode {
     fn from(node: Node) -> Self {
         let component_ref = node.component.id.as_str().to_string();
+        let operation_name = node.component.operation.clone();
         let operation_in_mapping = extract_operation_from_mapping(&node.input.mapping);
         let kind = match component_ref.as_str() {
             "component.exec" => {
@@ -861,17 +905,11 @@ impl From<Node> for HostNode {
             NodeKind::BuiltinEmit { .. } => extract_emit_payload(&node.input.mapping),
             _ => node.input.mapping.clone(),
         };
-        let payload_expr = match &kind {
-            // Packs may encode the component operation on the FlowComponentRef instead of in the
-            // payload. Preserve it so component.exec sees the bound operation.
-            NodeKind::Exec { .. } | NodeKind::PackComponent { .. } => {
-                merge_operation(payload_expr, node.component.operation.as_deref())
-            }
-            _ => payload_expr,
-        };
         Self {
             kind,
             component: component_label,
+            component_id: component_ref,
+            operation_name,
             operation_in_mapping,
             payload_expr,
             routing: node.routing,
@@ -915,6 +953,60 @@ fn extract_emit_payload(payload: &Value) -> Value {
     payload.clone()
 }
 
+fn split_operation_payload(payload: Value) -> (Value, Value) {
+    if let Value::Object(mut map) = payload.clone()
+        && map.contains_key("input")
+    {
+        let input = map.remove("input").unwrap_or(Value::Null);
+        let config = map.remove("config").unwrap_or(Value::Null);
+        let legacy_only = map.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "operation" | "op" | "component" | "component_ref"
+            )
+        });
+        if legacy_only {
+            return (input, config);
+        }
+    }
+    (payload, Value::Null)
+}
+
+fn resolve_component_operation(
+    node_id: &str,
+    component_label: &str,
+    payload_operation: Option<String>,
+    operation_override: Option<&str>,
+    operation_in_mapping: Option<&str>,
+) -> Result<String> {
+    if let Some(op) = operation_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(op.to_string());
+    }
+
+    if let Some(op) = payload_operation
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(op.to_string());
+    }
+
+    let mut message = format!(
+        "missing operation for node `{}` (component `{}`); expected node.component.operation to be set",
+        node_id, component_label,
+    );
+    if let Some(found) = operation_in_mapping {
+        message.push_str(&format!(
+            ". Found operation in input.mapping (`{}`) but this is not used; pack compiler must preserve node.component.operation.",
+            found
+        ));
+    }
+    bail!(message);
+}
+
 fn emit_kind_from_ref(component_ref: &str) -> EmitKind {
     match component_ref {
         "emit.log" => EmitKind::Log,
@@ -928,29 +1020,6 @@ fn emit_ref_from_kind(kind: &EmitKind) -> String {
         EmitKind::Log => "emit.log".to_string(),
         EmitKind::Response => "emit.response".to_string(),
         EmitKind::Other(other) => other.clone(),
-    }
-}
-
-fn merge_operation(payload: Value, operation: Option<&str>) -> Value {
-    let Some(op) = operation else { return payload };
-    match payload {
-        Value::Object(mut map) => {
-            let set_op = match map.get("operation") {
-                Some(Value::String(existing)) => existing.trim().is_empty(),
-                None => true,
-                _ => true,
-            };
-            if set_op {
-                map.insert("operation".into(), Value::String(op.to_string()));
-            }
-            Value::Object(map)
-        }
-        Value::Null => {
-            let mut map = JsonMap::new();
-            map.insert("operation".into(), Value::String(op.to_string()));
-            Value::Object(map)
-        }
-        other => other,
     }
 }
 
@@ -1042,6 +1111,8 @@ mod tests {
                 target_component: "qa.process".into(),
             },
             component: "component.exec".into(),
+            component_id: "component.exec".into(),
+            operation_name: None,
             operation_in_mapping: None,
             payload_expr: Value::Null,
             routing: Routing::End,
@@ -1055,7 +1126,10 @@ mod tests {
                 &node,
                 &state,
                 payload,
-                None,
+                ComponentOverrides {
+                    component: None,
+                    operation: None,
+                },
             ))
             .unwrap_err();
         let message = err.to_string();
@@ -1094,6 +1168,8 @@ mod tests {
                 target_component: "qa.process".into(),
             },
             component: "component.exec".into(),
+            component_id: "component.exec".into(),
+            operation_name: None,
             operation_in_mapping: Some("render".into()),
             payload_expr: Value::Null,
             routing: Routing::End,
@@ -1107,7 +1183,10 @@ mod tests {
                 &node,
                 &state,
                 payload,
-                None,
+                ComponentOverrides {
+                    component: None,
+                    operation: None,
+                },
             ))
             .unwrap_err();
         let message = err.to_string();

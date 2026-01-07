@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use anyhow::{Context, Result, anyhow};
-use greentic_flow::model::FlowDoc;
+use greentic_flow::model::{FlowDoc, NodeDoc};
 use greentic_types::flow::FlowHasher;
 use greentic_types::{
     ComponentId, Flow, FlowComponentRef, FlowId, FlowKind, FlowMetadata, InputMapping, Node,
@@ -40,12 +40,14 @@ const FLOW_SCHEMA_VERSION: &str = "1.0";
 pub fn flow_doc_to_ir(doc: FlowDoc) -> Result<FlowIR> {
     let mut nodes: IndexMap<String, NodeIR> = IndexMap::new();
     for (id, node) in doc.nodes {
+        let (component, payload_expr) = extract_node_payload(&node)
+            .with_context(|| format!("missing component for node `{id}`"))?;
         let routes = parse_routes(node.routing)?;
         nodes.insert(
             id.clone(),
             NodeIR {
-                component: node.component,
-                payload_expr: node.payload,
+                component,
+                payload_expr,
                 routes,
             },
         );
@@ -58,6 +60,21 @@ pub fn flow_doc_to_ir(doc: FlowDoc) -> Result<FlowIR> {
         parameters: doc.parameters,
         nodes,
     })
+}
+
+fn extract_node_payload(node: &NodeDoc) -> Result<(String, Value)> {
+    if let Some(operation) = node.operation.as_deref() {
+        return Ok((operation.to_string(), node.payload.clone()));
+    }
+    let Some((component, payload)) = node
+        .raw
+        .iter()
+        .next()
+        .map(|(key, value)| (key.clone(), value.clone()))
+    else {
+        return Err(anyhow!("node missing operation payload"));
+    };
+    Ok((component, payload))
 }
 
 pub fn flow_ir_to_flow(flow_ir: FlowIR) -> Result<Flow> {

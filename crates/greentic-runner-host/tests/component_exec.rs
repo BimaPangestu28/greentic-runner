@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
@@ -9,8 +10,10 @@ use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
 use greentic_runner_host::runner::engine::{FlowContext, FlowEngine, FlowStatus};
 use greentic_runner_host::runner::flow_adapter::{FlowIR, NodeIR, RouteIR};
 use greentic_types::{
-    ComponentCapabilities, ComponentManifest, ComponentProfiles, FlowKind, PackFlowEntry, PackKind,
-    PackManifest, ResourceHints, encode_pack_manifest,
+    ComponentCapabilities, ComponentManifest, ComponentProfiles, ExtensionInline, ExtensionRef,
+    Flow, FlowComponentRef, FlowId, FlowKind, InputMapping, Node, NodeId, OutputMapping,
+    PackFlowEntry, PackKind, PackManifest, ResourceHints, Routing, TelemetryHints,
+    encode_pack_manifest,
 };
 use once_cell::sync::Lazy;
 use semver::Version;
@@ -127,6 +130,8 @@ fn demo_flow_ir() -> FlowIR {
     }
 }
 
+const RUNTIME_FLOW_EXTENSION_ID: &str = "greentic.pack.runtime_flow";
+
 fn host_config(bindings_path: &Path) -> HostConfig {
     HostConfig {
         tenant: "demo".into(),
@@ -141,6 +146,42 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         oauth: None,
         mocks: None,
     }
+}
+
+fn legacy_component_exec_flow(flow_id: &str, message: &str) -> Result<Flow> {
+    let node_id = NodeId::from_str("exec")?;
+    let mut nodes = HashMap::new();
+    nodes.insert(
+        node_id.clone(),
+        Node {
+            id: node_id.clone(),
+            component: FlowComponentRef {
+                id: "component.exec".parse()?,
+                pack_alias: None,
+                operation: None,
+            },
+            input: InputMapping {
+                mapping: serde_json::json!({
+                    "component": "qa.process",
+                    "operation": "process",
+                    "input": { "message": message }
+                }),
+            },
+            output: OutputMapping {
+                mapping: Value::Null,
+            },
+            routing: Routing::End,
+            telemetry: TelemetryHints::default(),
+        },
+    );
+    Ok(Flow {
+        schema_version: "1.0".into(),
+        id: FlowId::from_str(flow_id)?,
+        kind: FlowKind::Messaging,
+        entrypoints: BTreeMap::from([("default".to_string(), Value::String(node_id.to_string()))]),
+        nodes: nodes.into_iter().collect(),
+        metadata: Default::default(),
+    })
 }
 
 fn component_artifact_path(temp_dir: &Path) -> Result<PathBuf> {
@@ -201,6 +242,82 @@ fn build_pack(flow_yaml: &str, pack_path: &Path) -> Result<()> {
         secret_requirements: Vec::new(),
         bootstrap: None,
         extensions: None,
+    };
+
+    let mut zip = zip::ZipWriter::new(File::create(pack_path).context("create pack archive")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(&manifest)?;
+    zip.start_file("manifest.cbor", options)?;
+    zip.write_all(&manifest_bytes)?;
+
+    zip.start_file("components/qa.process.wasm", options)?;
+    let mut comp_file = File::open(&component_path)?;
+    std::io::copy(&mut comp_file, &mut zip)?;
+    zip.finish().context("finalise pack archive")?;
+    Ok(())
+}
+
+fn build_pack_with_runtime_extension(
+    manifest_flows: Vec<Flow>,
+    runtime_extension: Value,
+    pack_path: &Path,
+) -> Result<()> {
+    let component_path = component_artifact_path(
+        pack_path
+            .parent()
+            .expect("pack path should have parent for temp dir"),
+    )?;
+
+    let flow_entries = manifest_flows
+        .iter()
+        .map(|flow| PackFlowEntry {
+            id: flow.id.clone(),
+            kind: flow.kind,
+            flow: flow.clone(),
+            tags: Vec::new(),
+            entrypoints: vec!["default".into()],
+        })
+        .collect::<Vec<_>>();
+
+    let mut extensions = BTreeMap::new();
+    extensions.insert(
+        RUNTIME_FLOW_EXTENSION_ID.to_string(),
+        ExtensionRef {
+            kind: RUNTIME_FLOW_EXTENSION_ID.to_string(),
+            version: "2.0.0".into(),
+            digest: None,
+            location: None,
+            inline: Some(ExtensionInline::Other(runtime_extension)),
+        },
+    );
+
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "component.exec.runtime".parse()?,
+        version: Version::parse("0.0.0")?,
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: vec![ComponentManifest {
+            id: "qa.process".parse()?,
+            version: Version::parse("0.1.0")?,
+            supports: vec![FlowKind::Messaging],
+            world: "greentic:component@0.4.0".into(),
+            profiles: ComponentProfiles::default(),
+            capabilities: ComponentCapabilities::default(),
+            configurators: None,
+            operations: Vec::new(),
+            config_schema: None,
+            resources: ResourceHints::default(),
+            dev_flows: BTreeMap::new(),
+        }],
+        flows: flow_entries,
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+        secret_requirements: Vec::new(),
+        bootstrap: None,
+        extensions: Some(extensions),
     };
 
     let mut zip = zip::ZipWriter::new(File::create(pack_path).context("create pack archive")?);
@@ -406,5 +523,77 @@ nodes:
         output_str.contains("logged"),
         "expected emit.log to produce output; got {output_str}"
     );
+    Ok(())
+}
+
+#[test]
+fn runtime_extension_flow_overrides_manifest_flow() -> Result<()> {
+    let rt = *RUNTIME;
+    let temp = TempDir::new()?;
+    let pack_path = temp.path().join("runtime-extension.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    let legacy_flow = legacy_component_exec_flow("exec.flow", "legacy")?;
+    let runtime_flow = serde_json::json!({
+        "id": "exec.flow",
+        "flow_type": "messaging",
+        "start": "exec",
+        "nodes": {
+            "exec": {
+                "component_id": "qa.process",
+                "operation_name": "process",
+                "operation_payload": { "message": "resolved" },
+                "routing": "end"
+            }
+        }
+    });
+    let runtime_extension = serde_json::json!({ "flows": [runtime_flow] });
+    build_pack_with_runtime_extension(vec![legacy_flow], runtime_extension, &pack_path)?;
+
+    let config = Arc::new(host_config(&bindings_path));
+    let pack = Arc::new(rt.block_on(PackRuntime::load(
+        &pack_path,
+        Arc::clone(&config),
+        None,
+        None,
+        None,
+        None,
+        Arc::new(greentic_runner_host::wasi::RunnerWasiPolicy::new()),
+        greentic_runner_host::secrets::default_manager(),
+        None,
+        false,
+        ComponentResolution::default(),
+    ))?);
+    let engine = rt.block_on(FlowEngine::new(
+        vec![Arc::clone(&pack)],
+        Arc::clone(&config),
+    ))?;
+
+    let retry_config = config.retry.clone().into();
+    let ctx = FlowContext {
+        tenant: config.tenant.as_str(),
+        flow_id: "exec.flow",
+        node_id: None,
+        tool: None,
+        action: None,
+        session_id: None,
+        provider_id: None,
+        retry_config,
+        observer: None,
+        mocks: None,
+    };
+
+    let execution = rt
+        .block_on(engine.execute(ctx, Value::Null))
+        .context("runtime extension flow run")?;
+    match execution.status {
+        FlowStatus::Completed => {}
+        FlowStatus::Waiting(wait) => {
+            anyhow::bail!("flow paused unexpectedly: {:?}", wait.reason);
+        }
+    }
+
+    assert_eq!(execution.output["message"], serde_json::json!("resolved"));
     Ok(())
 }

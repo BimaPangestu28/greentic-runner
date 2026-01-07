@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -34,9 +34,12 @@ use greentic_interfaces_wasmtime::host_helpers::v1::{
 use greentic_interfaces_wasmtime::http_client_client_v1_0::greentic::interfaces_types::types::Impersonation as ImpersonationV1_0;
 use greentic_interfaces_wasmtime::http_client_client_v1_1::greentic::interfaces_types::types::Impersonation as ImpersonationV1_1;
 use greentic_pack::builder as legacy_pack;
+use greentic_types::flow::FlowHasher;
 use greentic_types::{
-    EnvId, Flow, StateKey as StoreStateKey, TeamId, TenantCtx as TypesTenantCtx, TenantId, UserId,
-    decode_pack_manifest,
+    ComponentId, EnvId, ExtensionRef, Flow, FlowComponentRef, FlowId, FlowKind, FlowMetadata,
+    InputMapping, Node, NodeId, OutputMapping, Routing, StateKey as StoreStateKey, TeamId,
+    TelemetryHints, TenantCtx as TypesTenantCtx, TenantId, UserId, decode_pack_manifest,
+    pack_manifest::ExtensionInline,
 };
 use host_v1::http_client::{
     HttpClientError, HttpClientErrorV1_1, HttpClientHost, HttpClientHostV1_1,
@@ -44,6 +47,7 @@ use host_v1::http_client::{
     RequestV1_1 as HttpRequestV1_1, Response as HttpResponse, ResponseV1_1 as HttpResponseV1_1,
     TenantCtx as HttpTenantCtx, TenantCtxV1_1 as HttpTenantCtxV1_1,
 };
+use indexmap::IndexMap;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use reqwest::blocking::Client as BlockingClient;
@@ -1448,6 +1452,47 @@ struct PackFlows {
     metadata: PackMetadata,
 }
 
+const RUNTIME_FLOW_EXTENSION_IDS: [&str; 3] = [
+    "greentic.pack.runtime_flow",
+    "greentic.pack.flow_runtime",
+    "greentic.pack.runtime_flows",
+];
+
+#[derive(Debug, Deserialize)]
+struct RuntimeFlowBundle {
+    flows: Vec<RuntimeFlow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeFlow {
+    id: String,
+    #[serde(alias = "flow_type")]
+    kind: FlowKind,
+    #[serde(default)]
+    schema_version: Option<String>,
+    #[serde(default)]
+    start: Option<String>,
+    #[serde(default)]
+    entrypoints: BTreeMap<String, Value>,
+    nodes: BTreeMap<String, RuntimeNode>,
+    #[serde(default)]
+    metadata: Option<FlowMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeNode {
+    #[serde(alias = "component")]
+    component_id: String,
+    #[serde(default, alias = "operation")]
+    operation_name: Option<String>,
+    #[serde(default, alias = "payload", alias = "input")]
+    operation_payload: Value,
+    #[serde(default)]
+    routing: Option<Routing>,
+    #[serde(default)]
+    telemetry: Option<TelemetryHints>,
+}
+
 fn deserialize_json_bytes(bytes: Vec<u8>) -> Result<Value> {
     if bytes.is_empty() {
         return Ok(Value::Null);
@@ -1461,6 +1506,9 @@ fn deserialize_json_bytes(bytes: Vec<u8>) -> Result<Value> {
 
 impl PackFlows {
     fn from_manifest(manifest: greentic_types::PackManifest) -> Self {
+        if let Some(flows) = flows_from_runtime_extension(&manifest) {
+            return flows;
+        }
         let descriptors = manifest
             .flows
             .iter()
@@ -1484,6 +1532,133 @@ impl PackFlows {
     }
 }
 
+fn flows_from_runtime_extension(manifest: &greentic_types::PackManifest) -> Option<PackFlows> {
+    let extensions = manifest.extensions.as_ref()?;
+    let extension = extensions.iter().find_map(|(key, ext)| {
+        if RUNTIME_FLOW_EXTENSION_IDS
+            .iter()
+            .any(|candidate| candidate == key)
+        {
+            Some(ext)
+        } else {
+            None
+        }
+    })?;
+    let runtime_flows = match decode_runtime_flow_extension(extension) {
+        Some(flows) if !flows.is_empty() => flows,
+        _ => return None,
+    };
+
+    let descriptors = runtime_flows
+        .iter()
+        .map(|flow| FlowDescriptor {
+            id: flow.id.as_str().to_string(),
+            flow_type: flow_kind_to_str(flow.kind).to_string(),
+            profile: manifest.pack_id.as_str().to_string(),
+            version: manifest.version.to_string(),
+            description: None,
+        })
+        .collect::<Vec<_>>();
+    let flows = runtime_flows
+        .into_iter()
+        .map(|flow| (flow.id.as_str().to_string(), flow))
+        .collect();
+
+    Some(PackFlows {
+        metadata: PackMetadata::from_manifest(manifest),
+        descriptors,
+        flows,
+    })
+}
+
+fn decode_runtime_flow_extension(extension: &ExtensionRef) -> Option<Vec<Flow>> {
+    let value = match extension.inline.as_ref()? {
+        ExtensionInline::Other(value) => value.clone(),
+        _ => return None,
+    };
+
+    if let Ok(bundle) = serde_json::from_value::<RuntimeFlowBundle>(value.clone()) {
+        return Some(collect_runtime_flows(bundle.flows));
+    }
+
+    if let Ok(flows) = serde_json::from_value::<Vec<RuntimeFlow>>(value.clone()) {
+        return Some(collect_runtime_flows(flows));
+    }
+
+    if let Ok(flows) = serde_json::from_value::<Vec<Flow>>(value) {
+        return Some(flows);
+    }
+
+    warn!(
+        extension = %extension.kind,
+        version = %extension.version,
+        "runtime flow extension present but could not be decoded"
+    );
+    None
+}
+
+fn collect_runtime_flows(flows: Vec<RuntimeFlow>) -> Vec<Flow> {
+    flows
+        .into_iter()
+        .filter_map(|flow| match runtime_flow_to_flow(flow) {
+            Ok(flow) => Some(flow),
+            Err(err) => {
+                warn!(error = %err, "failed to decode runtime flow");
+                None
+            }
+        })
+        .collect()
+}
+
+fn runtime_flow_to_flow(runtime: RuntimeFlow) -> Result<Flow> {
+    let flow_id = FlowId::from_str(&runtime.id)
+        .with_context(|| format!("invalid flow id `{}`", runtime.id))?;
+    let mut entrypoints = runtime.entrypoints;
+    if entrypoints.is_empty()
+        && let Some(start) = &runtime.start
+    {
+        entrypoints.insert("default".into(), Value::String(start.clone()));
+    }
+
+    let mut nodes: IndexMap<NodeId, Node, FlowHasher> = IndexMap::default();
+    for (id, node) in runtime.nodes {
+        let node_id = NodeId::from_str(&id).with_context(|| format!("invalid node id `{id}`"))?;
+        let component_id = ComponentId::from_str(&node.component_id)
+            .with_context(|| format!("invalid component id `{}`", node.component_id))?;
+        let component = FlowComponentRef {
+            id: component_id,
+            pack_alias: None,
+            operation: node.operation_name,
+        };
+        let routing = node.routing.unwrap_or(Routing::End);
+        let telemetry = node.telemetry.unwrap_or_default();
+        nodes.insert(
+            node_id.clone(),
+            Node {
+                id: node_id,
+                component,
+                input: InputMapping {
+                    mapping: node.operation_payload,
+                },
+                output: OutputMapping {
+                    mapping: Value::Null,
+                },
+                routing,
+                telemetry,
+            },
+        );
+    }
+
+    Ok(Flow {
+        schema_version: runtime.schema_version.unwrap_or_else(|| "1.0".to_string()),
+        id: flow_id,
+        kind: runtime.kind,
+        entrypoints,
+        nodes,
+        metadata: runtime.metadata.unwrap_or_default(),
+    })
+}
+
 fn flow_kind_to_str(kind: greentic_types::FlowKind) -> &'static str {
     match kind {
         greentic_types::FlowKind::Messaging => "messaging",
@@ -1505,28 +1680,33 @@ fn read_entry(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>> {
 
 fn normalize_flow_doc(mut doc: FlowDoc) -> FlowDoc {
     for node in doc.nodes.values_mut() {
-        if node.component.is_empty()
-            && let Some((component_ref, payload)) = node.raw.iter().next()
-        {
-            if component_ref.starts_with("emit.") {
-                node.component = component_ref.clone();
-                node.payload = payload.clone();
-                node.raw.clear();
-                continue;
-            }
-            let (target_component, operation, input, config) =
-                infer_component_exec(payload, component_ref);
-            let mut payload_obj = serde_json::Map::new();
-            // component.exec is meta; ensure the payload carries the actual target component.
-            payload_obj.insert("component".into(), Value::String(target_component));
-            payload_obj.insert("operation".into(), Value::String(operation));
-            payload_obj.insert("input".into(), input);
-            if let Some(cfg) = config {
-                payload_obj.insert("config".into(), cfg);
-            }
-            node.component = "component.exec".to_string();
-            node.payload = Value::Object(payload_obj);
+        let Some((component_ref, payload)) = node
+            .raw
+            .iter()
+            .next()
+            .map(|(key, value)| (key.clone(), value.clone()))
+        else {
+            continue;
+        };
+        if component_ref.starts_with("emit.") {
+            node.operation = Some(component_ref);
+            node.payload = payload;
+            node.raw.clear();
+            continue;
         }
+        let (target_component, operation, input, config) =
+            infer_component_exec(&payload, &component_ref);
+        let mut payload_obj = serde_json::Map::new();
+        // component.exec is meta; ensure the payload carries the actual target component.
+        payload_obj.insert("component".into(), Value::String(target_component));
+        payload_obj.insert("operation".into(), Value::String(operation));
+        payload_obj.insert("input".into(), input);
+        if let Some(cfg) = config {
+            payload_obj.insert("config".into(), cfg);
+        }
+        node.operation = Some("component.exec".to_string());
+        node.payload = Value::Object(payload_obj);
+        node.raw.clear();
     }
     doc
 }
@@ -1755,14 +1935,15 @@ mod tests {
             start: Some("start".into()),
             parameters: json!({}),
             tags: Vec::new(),
+            schema_version: None,
             entrypoints: BTreeMap::new(),
             nodes,
         };
 
         let normalized = normalize_flow_doc(doc);
         let node = normalized.nodes.get("start").expect("node exists");
-        assert_eq!(node.component, "component.exec");
-        assert!(node.raw.is_empty() || node.raw.contains_key("templating.handlebars"));
+        assert_eq!(node.operation.as_deref(), Some("component.exec"));
+        assert!(node.raw.is_empty());
         let payload = node.payload.as_object().expect("payload object");
         assert_eq!(
             payload.get("component"),
