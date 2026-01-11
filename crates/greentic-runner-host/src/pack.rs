@@ -2176,13 +2176,13 @@ fn load_components_from_archive(
 mod tests {
     use super::*;
     use greentic_flow::model::{FlowDoc, NodeDoc};
+    use indexmap::IndexMap;
     use serde_json::json;
-    use std::collections::BTreeMap;
 
     #[test]
     fn normalizes_raw_component_to_component_exec() {
-        let mut nodes = BTreeMap::new();
-        let mut raw = BTreeMap::new();
+        let mut nodes = IndexMap::new();
+        let mut raw = IndexMap::new();
         raw.insert(
             "templating.handlebars".into(),
             json!({ "template": "Hi {{name}}" }),
@@ -2204,7 +2204,7 @@ mod tests {
             parameters: json!({}),
             tags: Vec::new(),
             schema_version: None,
-            entrypoints: BTreeMap::new(),
+            entrypoints: IndexMap::new(),
             nodes,
         };
 
