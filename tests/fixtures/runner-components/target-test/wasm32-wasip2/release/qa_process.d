@@ -1,0 +1,1 @@
+/projects/ai/greentic-ng/greentic-runner/tests/fixtures/runner-components/target-test/wasm32-wasip2/release/qa_process.wasm: /projects/ai/greentic-ng/greentic-runner/tests/fixtures/runner-components/qa_process/src/lib.rs

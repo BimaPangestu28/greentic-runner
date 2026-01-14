@@ -11,6 +11,15 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        step:
+          - fmt
+          - clippy
+          - crate_tests
+          - workspace_tests
+          - package
     steps:
       - uses: actions/checkout@v4
 
@@ -26,9 +35,6 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Cargo fetch
-        run: cargo fetch --locked
-
       - name: Run local_check
         env:
           CI: "1"
@@ -36,5 +42,7 @@ jobs:
           CARGO_NET_OFFLINE: "false"
           CARGO_BUILD_JOBS: "1"
           CARGO_INCREMENTAL: "0"
+          LOCAL_CHECK_STEPS: ${{ matrix.step }}
+          LOCAL_CHECK_PACKAGE: ${{ matrix.step == 'package' && '1' || '0' }}
         run: |
           bash ci/local_check.sh
