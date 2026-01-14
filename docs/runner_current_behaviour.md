@@ -19,7 +19,7 @@
 - Execution path:
   - Ingress adapters normalize activities to `IngressEnvelope` and call `StateMachineRuntime::handle` (`engine/runtime.rs`), which wraps the flow engine via the `PackFlowAdapter`.
   - The `PackFlowAdapter` calls `FlowEngine::execute`/`resume` with the ingress payload; flow nodes run as builtins (above).
-  - `component.exec` resolves the target pack component (from `manifest.components`) and invokes `greentic:component/node@0.4.0#invoke`, passing an `ExecCtx`, node payload as input JSON, and optional config JSON.
+  - `component.exec` resolves the target pack component (from `manifest.components`) and invokes `greentic:component/node@0.5.0#invoke` (fallback to `@0.4.0`), passing an `ExecCtx`, node payload as input JSON, and optional config JSON.
 - Host imports: `ComponentState` implements `greentic-interfaces-host` v0.6 imports (`HostImports` in `pack.rs`), wiring HTTP, secrets, telemetry, state/session, OAuth. MCP bridging is removed; pack components rely on host imports only.
   - Component invocation caches a prepared `InstancePre` per component (fresh `Store` per call) to avoid redundant linking work; a shared blocking HTTP client is reused across invocations to avoid spawning per-call clients.
 

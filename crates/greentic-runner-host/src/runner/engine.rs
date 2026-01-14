@@ -867,31 +867,55 @@ impl From<Flow> for HostFlow {
 impl From<Node> for HostNode {
     fn from(node: Node) -> Self {
         let component_ref = node.component.id.as_str().to_string();
-        let operation_name = node.component.operation.clone();
+        let raw_operation = node.component.operation.clone();
         let operation_in_mapping = extract_operation_from_mapping(&node.input.mapping);
-        let kind = match component_ref.as_str() {
-            "component.exec" => {
-                let target = extract_target_component(&node.input.mapping)
-                    .unwrap_or_else(|| "component.exec".to_string());
-                if target.starts_with("emit.") {
-                    NodeKind::BuiltinEmit {
-                        kind: emit_kind_from_ref(&target),
-                    }
+        let operation_is_component_exec = raw_operation.as_deref() == Some("component.exec");
+        let operation_is_emit = raw_operation
+            .as_deref()
+            .map(|op| op.starts_with("emit."))
+            .unwrap_or(false);
+        let is_component_exec = component_ref == "component.exec" || operation_is_component_exec;
+
+        let kind = if is_component_exec {
+            let target = if component_ref == "component.exec" {
+                if let Some(op) = raw_operation
+                    .as_deref()
+                    .filter(|op| op.starts_with("emit."))
+                {
+                    op.to_string()
                 } else {
-                    NodeKind::Exec {
-                        target_component: target,
-                    }
+                    extract_target_component(&node.input.mapping)
+                        .unwrap_or_else(|| "component.exec".to_string())
+                }
+            } else {
+                extract_target_component(&node.input.mapping)
+                    .unwrap_or_else(|| component_ref.clone())
+            };
+            if target.starts_with("emit.") {
+                NodeKind::BuiltinEmit {
+                    kind: emit_kind_from_ref(&target),
+                }
+            } else {
+                NodeKind::Exec {
+                    target_component: target,
                 }
             }
-            "flow.call" => NodeKind::FlowCall,
-            "provider.invoke" => NodeKind::ProviderInvoke,
-            "session.wait" => NodeKind::Wait,
-            comp if comp.starts_with("emit.") => NodeKind::BuiltinEmit {
-                kind: emit_kind_from_ref(comp),
-            },
-            other => NodeKind::PackComponent {
-                component_ref: other.to_string(),
-            },
+        } else if operation_is_emit {
+            NodeKind::BuiltinEmit {
+                kind: emit_kind_from_ref(raw_operation.as_deref().unwrap_or("emit.log")),
+            }
+        } else {
+            match component_ref.as_str() {
+                "flow.call" => NodeKind::FlowCall,
+                "provider.invoke" => NodeKind::ProviderInvoke,
+                "session.wait" => NodeKind::Wait,
+                comp if comp.starts_with("emit.") => NodeKind::BuiltinEmit {
+                    kind: emit_kind_from_ref(comp),
+                },
+                other => NodeKind::PackComponent {
+                    component_ref: other.to_string(),
+                },
+            }
         };
         let component_label = match &kind {
             NodeKind::Exec { .. } => "component.exec".to_string(),
@@ -901,6 +925,11 @@ impl From<Node> for HostNode {
             NodeKind::BuiltinEmit { kind } => emit_ref_from_kind(kind),
             NodeKind::Wait => "session.wait".to_string(),
         };
+        let operation_name = if is_component_exec && operation_is_component_exec {
+            None
+        } else {
+            raw_operation.clone()
+        };
         let payload_expr = match kind {
             NodeKind::BuiltinEmit { .. } => extract_emit_payload(&node.input.mapping),
             _ => node.input.mapping.clone(),
@@ -908,7 +937,11 @@ impl From<Node> for HostNode {
         Self {
             kind,
             component: component_label,
-            component_id: component_ref,
+            component_id: if is_component_exec {
+                "component.exec".to_string()
+            } else {
+                component_ref
+            },
             operation_name,
             operation_in_mapping,
             payload_expr,

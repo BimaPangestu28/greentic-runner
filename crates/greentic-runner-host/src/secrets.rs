@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use greentic_secrets::SecretsManager;
-use greentic_secrets::env::EnvSecretsManager;
+use greentic_secrets_lib::SecretsManager;
+use greentic_secrets_lib::env::EnvSecretsManager;
 use tokio::runtime::{Handle, Runtime};
 
 /// Shared secrets manager handle used by the host.

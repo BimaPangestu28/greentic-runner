@@ -158,7 +158,7 @@ secrets are wired today.
     manual entry-flow selection, `MocksConfig` toggles for HTTP/telemetry/time,
     and optional OTLP streaming.
 
-### `greentic-secrets`
+### `greentic-secrets-lib`
 
 - **Role** – very small helper crate that currently logs/validates secrets
   backend choices (`Env` today) and exposes `init`.

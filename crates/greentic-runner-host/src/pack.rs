@@ -6,15 +6,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::component_api::component::greentic::component::control::Host as ComponentControlHost;
 use crate::component_api::{
-    ComponentPre, control, node::ExecCtx as ComponentExecCtx, node::InvokeResult, node::NodeError,
+    self, node::ExecCtx as ComponentExecCtx, node::InvokeResult, node::NodeError,
 };
 use crate::oauth::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
 use crate::provider::{ProviderBinding, ProviderRegistry};
 use crate::provider_core::SchemaCorePre as ProviderComponentPre;
 use crate::provider_core_only;
-use crate::runtime_wasmtime::{Component, Engine, Linker, ResourceTable};
+use crate::runtime_wasmtime::{Component, Engine, InstancePre, Linker, ResourceTable};
 use anyhow::{Context, Result, anyhow, bail};
 use greentic_distributor_client::dist::{DistClient, DistError, DistOptions};
 use greentic_interfaces_wasmtime::host_helpers::v1::{
@@ -94,7 +93,7 @@ pub struct PackRuntime {
     flows: Option<PackFlows>,
     components: HashMap<String, PackComponent>,
     http_client: Arc<BlockingClient>,
-    pre_cache: Mutex<HashMap<String, ComponentPre<ComponentState>>>,
+    pre_cache: Mutex<HashMap<String, InstancePre<ComponentState>>>,
     session_store: Option<DynSessionStore>,
     state_store: Option<DynStateStore>,
     wasi_policy: Arc<RunnerWasiPolicy>,
@@ -829,35 +828,62 @@ impl ComponentState {
     fn host_mut(&mut self) -> &mut HostState {
         &mut self.host
     }
-}
 
-impl control::Host for ComponentState {
-    fn should_cancel(&mut self) -> bool {
+    fn should_cancel_host(&mut self) -> bool {
         false
     }
 
-    fn yield_now(&mut self) {
+    fn yield_now_host(&mut self) {
         // no-op cooperative yield
     }
 }
 
-fn add_component_control_to_linker(linker: &mut Linker<ComponentState>) -> wasmtime::Result<()> {
-    let mut inst = linker.instance("greentic:component/control@0.4.0")?;
+impl component_api::v0_4::greentic::component::control::Host for ComponentState {
+    fn should_cancel(&mut self) -> bool {
+        self.should_cancel_host()
+    }
+
+    fn yield_now(&mut self) {
+        self.yield_now_host();
+    }
+}
+
+impl component_api::v0_5::greentic::component::control::Host for ComponentState {
+    fn should_cancel(&mut self) -> bool {
+        self.should_cancel_host()
+    }
+
+    fn yield_now(&mut self) {
+        self.yield_now_host();
+    }
+}
+
+fn add_component_control_instance(
+    linker: &mut Linker<ComponentState>,
+    name: &str,
+) -> wasmtime::Result<()> {
+    let mut inst = linker.instance(name)?;
     inst.func_wrap(
         "should-cancel",
         |mut caller: StoreContextMut<'_, ComponentState>, (): ()| {
             let host = caller.data_mut();
-            Ok((ComponentControlHost::should_cancel(host),))
+            Ok((host.should_cancel_host(),))
         },
     )?;
     inst.func_wrap(
         "yield-now",
         |mut caller: StoreContextMut<'_, ComponentState>, (): ()| {
             let host = caller.data_mut();
-            ComponentControlHost::yield_now(host);
+            host.yield_now_host();
             Ok(())
         },
     )?;
+    Ok(())
+}
+
+fn add_component_control_to_linker(linker: &mut Linker<ComponentState>) -> wasmtime::Result<()> {
+    add_component_control_instance(linker, "greentic:component/control@0.5.0")?;
+    add_component_control_instance(linker, "greentic:component/control@0.4.0")?;
     Ok(())
 }
 
@@ -1230,8 +1256,6 @@ impl PackRuntime {
         let mut linker = Linker::new(&self.engine);
         register_all(&mut linker)?;
         add_component_control_to_linker(&mut linker)?;
-        let pre_instance = linker.instantiate_pre(&pack_component.component)?;
-        let pre: ComponentPre<ComponentState> = ComponentPre::new(pre_instance)?;
 
         let host_state = HostState::new(
             Arc::clone(&self.config),
@@ -1244,10 +1268,30 @@ impl PackRuntime {
         )?;
         let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
         let mut store = wasmtime::Store::new(&self.engine, store_state);
-        let bindings: crate::component_api::Component = pre.instantiate_async(&mut store).await?;
-        let node = bindings.greentic_component_node();
-
-        let result = node.call_invoke(&mut store, &ctx, operation, &input_json)?;
+        let pre_instance = linker.instantiate_pre(&pack_component.component)?;
+        let result = match component_api::v0_5::ComponentPre::new(pre_instance) {
+            Ok(pre) => {
+                let bindings = pre.instantiate_async(&mut store).await?;
+                let node = bindings.greentic_component_node();
+                let ctx_v05 = component_api::exec_ctx_v0_5(&ctx);
+                let result = node.call_invoke(&mut store, &ctx_v05, operation, &input_json)?;
+                component_api::invoke_result_from_v0_5(result)
+            }
+            Err(err) => {
+                if is_missing_node_export(&err, "0.5.0") {
+                    let pre_instance = linker.instantiate_pre(&pack_component.component)?;
+                    let pre: component_api::v0_4::ComponentPre<ComponentState> =
+                        component_api::v0_4::ComponentPre::new(pre_instance)?;
+                    let bindings = pre.instantiate_async(&mut store).await?;
+                    let node = bindings.greentic_component_node();
+                    let ctx_v04 = component_api::exec_ctx_v0_4(&ctx);
+                    let result = node.call_invoke(&mut store, &ctx_v04, operation, &input_json)?;
+                    component_api::invoke_result_from_v0_4(result)
+                } else {
+                    return Err(err);
+                }
+            }
+        };
 
         match result {
             InvokeResult::Ok(body) => {
@@ -1471,6 +1515,12 @@ impl PackRuntime {
             oauth_config: None,
         })
     }
+}
+
+fn is_missing_node_export(err: &wasmtime::Error, version: &str) -> bool {
+    let message = err.to_string();
+    message.contains("no exported instance named")
+        && message.contains(&format!("greentic:component/node@{version}"))
 }
 
 struct PackFlows {
