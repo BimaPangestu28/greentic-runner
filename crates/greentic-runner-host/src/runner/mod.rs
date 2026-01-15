@@ -10,6 +10,7 @@ pub mod engine;
 pub mod flow_adapter;
 pub mod ingress_util;
 pub mod mocks;
+pub mod templating;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

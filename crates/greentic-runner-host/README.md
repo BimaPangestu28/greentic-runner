@@ -36,7 +36,7 @@ Provider execution is **provider-core only**: packs declare provider runtimes vi
   }
   ```
   Canonical session keys follow `{tenant}:{provider}:{conversation-or-thread-or-channel}:{user}`, ensuring pause/resume and dedupe behave consistently per adapter.
-- **Sessions & state** – the host bundles `greentic-session`/`greentic-state`. Multi-turn flows pause via `session.wait`; the runtime stores `FlowSnapshot`s keyed by the canonical session, resumes on the next ingress event, and clears the entry on completion. Packs automatically receive the `state.get/state.set/session.update` host interface (WIT v0.6).
+- **Sessions & state** – the host bundles `greentic-session`/`greentic-state`. Multi-turn flows pause via `session.wait`; the runtime stores `FlowSnapshot`s keyed by the canonical session, resumes on the next ingress event, and clears the entry on completion. Packs can access `greentic:state/store@1.0.0` when the component declares state capability and the policy allows it.
 - **Telemetry & admin** – optional OTLP bootstrapping (`greentic-telemetry`), `/healthz`, and bearer-protected `/admin` endpoints (loopback-only when `ADMIN_TOKEN` is unset).
 
 ### Pack index format

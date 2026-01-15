@@ -8,7 +8,7 @@
 
 ## B) Manifest data used at runtime
 - `ComponentManifest.operations`: **not used** anywhere in runner.
-- `ComponentManifest.capabilities`: **not used** anywhere in runner.
+- `ComponentManifest.capabilities`: **used** to gate state-store linking (see `PackRuntime::allows_state_store` in `crates/greentic-runner-host/src/pack.rs`).
 - `ComponentManifest.id/version`: **used** only indirectly as `PackManifest.components[].id/version` when building `ComponentSpec` (pack.rs) for loading wasm.
 - Flow vs component schema validation: **not used**; flows are normalized/validated independently of component manifests.
 - Enforcement such as “requires operation” or “unknown operation”: **not tied to component manifests**; current checks are flow-level (e.g., missing operation in flow payload).

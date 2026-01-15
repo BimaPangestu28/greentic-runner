@@ -9,17 +9,9 @@ nodes:
       input:
         text: "hello"
     routing:
-      - to: tmpl
-  tmpl:
-    component.exec:
-      component: templating.handlebars
-      operation: render
-      input:
-        template: "Echo: {{state.nodes.qa.payload.text}}"
-    routing:
       - to: emit
   emit:
     emit.response:
-      from_node: tmpl
+      text: "Echo: {{node.qa.text}}"
     routing:
       - out: true

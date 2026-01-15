@@ -6,14 +6,16 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::config::{
-    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, StateStorePolicy, WebhookPolicy,
 };
 use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
+use greentic_runner_host::storage::new_state_store;
 use greentic_runner_host::wasi::RunnerWasiPolicy;
 use greentic_types::{
     ArtifactLocationV1, ComponentCapabilities, ComponentManifest, ComponentProfiles,
-    ComponentSourceEntryV1, ComponentSourceRef, ComponentSourcesV1, FlowKind, PackFlowEntry,
-    PackKind, PackManifest, ResolvedComponentV1, ResourceHints, encode_pack_manifest,
+    ComponentSourceEntryV1, ComponentSourceRef, ComponentSourcesV1, FlowKind, HostCapabilities,
+    PackFlowEntry, PackKind, PackManifest, ResolvedComponentV1, ResourceHints, StateCapabilities,
+    encode_pack_manifest,
 };
 use once_cell::sync::Lazy;
 use semver::Version;
@@ -42,6 +44,7 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         retry: FlowRetryConfig::default(),
         http_enabled: false,
         secrets_policy: SecretsPolicy::allow_all(),
+        state_store_policy: StateStorePolicy::default(),
         webhook_policy: WebhookPolicy::default(),
         timers: Vec::new(),
         oauth: None,
@@ -271,6 +274,103 @@ fn component_sources(fixtures_root: &Path) -> Result<Vec<(String, PathBuf)>> {
     }
 
     Ok(sources)
+}
+
+fn state_store_component_artifact() -> Result<PathBuf> {
+    let workspace_root = workspace_root();
+    let crates_root = workspace_root.join("tests/fixtures/runner-components");
+    let target_root = crates_root.join("target-test");
+    let crate_name = "state_store_component";
+    let crate_dir = crates_root.join(crate_name);
+
+    let status = Command::new("cargo")
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("CARGO_TARGET_DIR", &target_root)
+        .current_dir(&crate_dir)
+        .args([
+            "build",
+            "--offline",
+            "--target",
+            "wasm32-wasip2",
+            "--release",
+        ])
+        .status()
+        .with_context(|| format!("failed to build component crate {}", crate_name))?;
+    if !status.success() {
+        anyhow::bail!("component build failed for {}", crate_name);
+    }
+
+    let base = target_root.join("wasm32-wasip2").join("release");
+    let candidates = [
+        base.join(format!("{crate_name}.wasm")),
+        base.join("deps").join(format!("{crate_name}.wasm")),
+    ];
+    let artifact = candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "component artifact not found after build for {}",
+                crate_name
+            )
+        })?;
+    Ok(artifact)
+}
+
+fn build_state_store_pack(pack_path: &Path, include_state_capability: bool) -> Result<()> {
+    let component_path = state_store_component_artifact()?;
+    let mut capabilities = ComponentCapabilities::default();
+    if include_state_capability {
+        capabilities.host = HostCapabilities {
+            state: Some(StateCapabilities {
+                read: true,
+                write: true,
+            }),
+            ..HostCapabilities::default()
+        };
+    }
+
+    let manifest = PackManifest {
+        schema_version: "1.0".into(),
+        pack_id: "state.store.test".parse()?,
+        version: Version::parse("0.0.0")?,
+        kind: PackKind::Application,
+        publisher: "test".into(),
+        components: vec![ComponentManifest {
+            id: "state.store".parse()?,
+            version: Version::parse("0.1.0")?,
+            supports: vec![FlowKind::Messaging],
+            world: "greentic:component@0.4.0".into(),
+            profiles: ComponentProfiles::default(),
+            capabilities,
+            configurators: None,
+            operations: Vec::new(),
+            config_schema: None,
+            resources: ResourceHints::default(),
+            dev_flows: BTreeMap::new(),
+        }],
+        flows: Vec::new(),
+        dependencies: Vec::new(),
+        capabilities: Vec::new(),
+        signatures: Default::default(),
+        secret_requirements: Vec::new(),
+        bootstrap: None,
+        extensions: None,
+    };
+
+    let mut writer = ZipWriter::new(std::fs::File::create(pack_path).context("create state pack")?);
+    let options: FileOptions<'_, ()> =
+        FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest_bytes = encode_pack_manifest(&manifest)?;
+    writer.start_file("manifest.cbor", options)?;
+    writer.write_all(&manifest_bytes)?;
+
+    writer.start_file("components/state.store.wasm", options)?;
+    let mut file = std::fs::File::open(&component_path)
+        .with_context(|| format!("open component {}", component_path.display()))?;
+    std::io::copy(&mut file, &mut writer)?;
+    writer.finish().context("finalise state pack")?;
+    Ok(())
 }
 
 fn digest_for_bytes(bytes: &[u8]) -> String {
@@ -507,6 +607,95 @@ fn gtpack_manifest_offline_errors_when_remote_component_missing() -> Result<()> 
     assert!(
         message.contains("greentic-dist pull"),
         "error should suggest greentic-dist pull: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn state_store_roundtrip_requires_capability() -> Result<()> {
+    let rt = *RUNTIME;
+    let temp = TempDir::new()?;
+    let gtpack = temp.path().join("state-store.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    build_state_store_pack(&gtpack, true)?;
+
+    let config = Arc::new(host_config(&bindings_path));
+    let runtime = Arc::new(rt.block_on(PackRuntime::load(
+        &gtpack,
+        Arc::clone(&config),
+        None,
+        None,
+        None,
+        Some(new_state_store()),
+        Arc::new(RunnerWasiPolicy::new()),
+        greentic_runner_host::secrets::default_manager(),
+        None,
+        false,
+        ComponentResolution::default(),
+    ))?);
+
+    let write_ctx = demo_exec_ctx("write");
+    let write_payload = serde_json::to_string(&json!({
+        "key": "demo",
+        "value": { "count": 1 }
+    }))?;
+    rt.block_on(runtime.invoke_component("state.store", write_ctx, "write", None, write_payload))?;
+
+    let read_ctx = demo_exec_ctx("read");
+    let read_payload = serde_json::to_string(&json!({ "key": "demo" }))?;
+    let read_result =
+        rt.block_on(runtime.invoke_component("state.store", read_ctx, "read", None, read_payload))?;
+    assert_eq!(read_result, json!({ "value": { "count": 1 } }));
+
+    let delete_ctx = demo_exec_ctx("delete");
+    let delete_payload = serde_json::to_string(&json!({ "key": "demo" }))?;
+    rt.block_on(runtime.invoke_component(
+        "state.store",
+        delete_ctx,
+        "delete",
+        None,
+        delete_payload,
+    ))?;
+
+    Ok(())
+}
+
+#[test]
+fn state_store_is_gated_without_capability() -> Result<()> {
+    let rt = *RUNTIME;
+    let temp = TempDir::new()?;
+    let gtpack = temp.path().join("state-store-denied.gtpack");
+    let bindings_path = temp.path().join("bindings.yaml");
+    std::fs::write(&bindings_path, b"tenant: demo")?;
+
+    build_state_store_pack(&gtpack, false)?;
+
+    let config = Arc::new(host_config(&bindings_path));
+    let runtime = Arc::new(rt.block_on(PackRuntime::load(
+        &gtpack,
+        Arc::clone(&config),
+        None,
+        None,
+        None,
+        Some(new_state_store()),
+        Arc::new(RunnerWasiPolicy::new()),
+        greentic_runner_host::secrets::default_manager(),
+        None,
+        false,
+        ComponentResolution::default(),
+    ))?);
+
+    let ctx = demo_exec_ctx("write");
+    let payload = serde_json::to_string(&json!({
+        "key": "demo",
+        "value": { "count": 1 }
+    }))?;
+    let result = rt.block_on(runtime.invoke_component("state.store", ctx, "write", None, payload));
+    assert!(
+        result.is_err(),
+        "state store should be gated without capability"
     );
     Ok(())
 }

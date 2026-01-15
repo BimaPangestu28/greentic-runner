@@ -17,6 +17,7 @@ pub struct HostConfig {
     pub retry: FlowRetryConfig,
     pub http_enabled: bool,
     pub secrets_policy: SecretsPolicy,
+    pub state_store_policy: StateStorePolicy,
     pub webhook_policy: WebhookPolicy,
     pub timers: Vec<TimerBinding>,
     pub oauth: Option<OAuthConfig>,
@@ -38,6 +39,8 @@ pub struct BindingsFile {
     pub oauth: Option<OAuthConfig>,
     #[serde(default)]
     pub mocks: Option<MocksConfig>,
+    #[serde(default)]
+    pub state_store: StateStorePolicy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +78,12 @@ pub struct FlowRetryConfig {
 pub struct WebhookPolicy {
     allow_paths: Vec<String>,
     deny_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StateStorePolicy {
+    #[serde(default = "default_state_store_allow")]
+    pub allow: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -136,6 +145,7 @@ impl HostConfig {
             retry: bindings.retry.clone(),
             http_enabled,
             secrets_policy,
+            state_store_policy: bindings.state_store.clone(),
             webhook_policy,
             timers: bindings.timers.clone(),
             oauth: bindings.oauth.clone(),
@@ -211,12 +221,24 @@ impl Default for RateLimits {
     }
 }
 
+impl Default for StateStorePolicy {
+    fn default() -> Self {
+        Self {
+            allow: default_state_store_allow(),
+        }
+    }
+}
+
 fn default_messaging_qps() -> u32 {
     10
 }
 
 fn default_messaging_burst() -> u32 {
     20
+}
+
+fn default_state_store_allow() -> bool {
+    true
 }
 
 impl From<WebhookBindingConfig> for WebhookPolicy {
@@ -287,6 +309,7 @@ mod tests {
             retry: FlowRetryConfig::default(),
             http_enabled: false,
             secrets_policy: SecretsPolicy::allow_all(),
+            state_store_policy: StateStorePolicy::default(),
             webhook_policy: WebhookPolicy::default(),
             timers: Vec::new(),
             oauth,

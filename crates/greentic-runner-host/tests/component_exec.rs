@@ -4,7 +4,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::config::{
-    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, StateStorePolicy, WebhookPolicy,
 };
 use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
 use greentic_runner_host::runner::engine::{FlowContext, FlowEngine, FlowStatus};
@@ -40,6 +40,7 @@ fn build_components() -> Result<Vec<(String, PathBuf)>> {
     let crates = vec![
         ("qa.process", "qa_process"),
         ("templating.handlebars", "templating_handlebars"),
+        ("state.store", "state_store_component"),
     ];
     let offline = std::env::var("CARGO_NET_OFFLINE").ok();
     for (name, krate) in &crates {
@@ -86,23 +87,6 @@ fn demo_flow_ir() -> FlowIR {
                 "input": { "text": "hello" }
             }),
             routes: vec![RouteIR {
-                to: Some("tmpl".into()),
-                out: false,
-            }],
-        },
-    );
-    nodes.insert(
-        "tmpl".into(),
-        NodeIR {
-            component: "component.exec".into(),
-            payload_expr: serde_json::json!({
-                "component": "templating.handlebars",
-                "operation": "render",
-                "input": {
-                    "template": "Echo: {{state.nodes.qa.payload.text}}"
-                }
-            }),
-            routes: vec![RouteIR {
                 to: Some("emit".into()),
                 out: false,
             }],
@@ -113,7 +97,7 @@ fn demo_flow_ir() -> FlowIR {
         NodeIR {
             component: "emit.response".into(),
             payload_expr: serde_json::json!({
-                "from_node": "tmpl"
+                "text": "Echo: {{node.qa.text}}"
             }),
             routes: vec![RouteIR {
                 to: None,
@@ -141,6 +125,7 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         retry: FlowRetryConfig::default(),
         http_enabled: false,
         secrets_policy: SecretsPolicy::allow_all(),
+        state_store_policy: StateStorePolicy::default(),
         webhook_policy: WebhookPolicy::default(),
         timers: Vec::new(),
         oauth: None,

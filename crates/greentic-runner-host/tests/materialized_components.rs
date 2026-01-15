@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use greentic_pack::builder as legacy_pack;
 use greentic_runner_host::config::{
-    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, StateStorePolicy, WebhookPolicy,
 };
 use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
 use greentic_runner_host::secrets::default_manager;
@@ -39,6 +39,7 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         retry: FlowRetryConfig::default(),
         http_enabled: false,
         secrets_policy: SecretsPolicy::allow_all(),
+        state_store_policy: StateStorePolicy::default(),
         webhook_policy: WebhookPolicy::default(),
         timers: Vec::new(),
         oauth: None,

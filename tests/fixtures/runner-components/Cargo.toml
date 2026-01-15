@@ -2,6 +2,7 @@
 members = [
     "qa_process",
     "templating_handlebars",
+    "state_store_component",
     "packager",
 ]
 resolver = "2"

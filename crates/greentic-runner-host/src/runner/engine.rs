@@ -14,6 +14,7 @@ use serde_json::{Map as JsonMap, Value, json};
 use tokio::task;
 
 use super::mocks::MockLayer;
+use super::templating::{TemplateOptions, render_template_value};
 use crate::config::{FlowRetryConfig, HostConfig};
 use crate::pack::{FlowDescriptor, PackRuntime};
 use crate::telemetry::{FlowSpanAttributes, annotate_span, backoff_delay_ms, set_flow_context};
@@ -43,7 +44,7 @@ pub struct FlowWait {
 #[derive(Clone, Debug)]
 pub enum FlowStatus {
     Completed,
-    Waiting(FlowWait),
+    Waiting(Box<FlowWait>),
 }
 
 #[derive(Clone, Debug)]
@@ -111,7 +112,7 @@ impl FlowExecution {
     fn waiting(output: Value, wait: FlowWait) -> Self {
         Self {
             output,
-            status: FlowStatus::Waiting(wait),
+            status: FlowStatus::Waiting(Box::new(wait)),
         }
     }
 }
@@ -260,6 +261,7 @@ impl FlowEngine {
         let flow_ir = self.get_or_load_flow(ctx.flow_id).await?;
         let mut state = snapshot.state;
         state.replace_input(input);
+        state.ensure_entry();
         self.drive_flow(&ctx, flow_ir, state, Some(snapshot.next_node))
             .await
     }
@@ -293,7 +295,16 @@ impl FlowEngine {
                 .get(&current)
                 .with_context(|| format!("node {} not found", current.as_str()))?;
 
-            let payload = node.payload_expr.clone();
+            let payload_template = node.payload_expr.clone();
+            let prev = state
+                .last_output
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| Value::Object(JsonMap::new()));
+            let ctx_value = template_context(&state, prev);
+            let payload =
+                render_template_value(&payload_template, &ctx_value, TemplateOptions::default())
+                    .context("failed to render node input template")?;
             let observed_payload = payload.clone();
             let node_id = current.clone();
             let event = NodeEvent {
@@ -313,6 +324,7 @@ impl FlowEngine {
                 .await?;
 
             state.nodes.insert(node_id.clone().into(), output.clone());
+            state.last_output = Some(output.payload.clone());
             if let Some(observer) = ctx.observer {
                 observer.on_node_end(&event, &output.payload);
             }
@@ -387,7 +399,6 @@ impl FlowEngine {
                     ctx,
                     node_id,
                     node,
-                    state,
                     payload,
                     ComponentOverrides {
                         component: Some(target_component.as_str()),
@@ -397,7 +408,7 @@ impl FlowEngine {
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::PackComponent { component_ref } => self
-                .execute_component_call(ctx, node_id, node, state, payload, component_ref.as_str())
+                .execute_component_call(ctx, node_id, node, payload, component_ref.as_str())
                 .await
                 .map(DispatchOutcome::complete),
             NodeKind::FlowCall => self
@@ -479,7 +490,6 @@ impl FlowEngine {
         ctx: &FlowContext<'_>,
         node_id: &str,
         node: &HostNode,
-        state: &ExecutionState,
         payload: Value,
         overrides: ComponentOverrides<'_>,
     ) -> Result<NodeOutput> {
@@ -516,7 +526,7 @@ impl FlowEngine {
             config: payload.config,
         };
 
-        self.invoke_component_call(ctx, node_id, state, call).await
+        self.invoke_component_call(ctx, node_id, call).await
     }
 
     async fn execute_component_call(
@@ -524,7 +534,6 @@ impl FlowEngine {
         ctx: &FlowContext<'_>,
         node_id: &str,
         node: &HostNode,
-        state: &ExecutionState,
         payload: Value,
         component_ref: &str,
     ) -> Result<NodeOutput> {
@@ -543,20 +552,15 @@ impl FlowEngine {
             input,
             config,
         };
-        self.invoke_component_call(ctx, node_id, state, call).await
+        self.invoke_component_call(ctx, node_id, call).await
     }
 
     async fn invoke_component_call(
         &self,
         ctx: &FlowContext<'_>,
         node_id: &str,
-        state: &ExecutionState,
-        mut call: ComponentCall,
+        call: ComponentCall,
     ) -> Result<NodeOutput> {
-        if let Value::Object(ref mut map) = call.input {
-            map.entry("state".to_string())
-                .or_insert_with(|| state.context());
-        }
         let input_json = serde_json::to_string(&call.input)?;
         let config_json = if call.config.is_null() {
             None
@@ -617,20 +621,32 @@ impl FlowEngine {
             .with_context(|| "provider.invoke requires an op")?
             .to_string();
 
-        let mut input_value = if !payload.in_map.is_null() {
-            let ctx_value = mapping_ctx(payload.input.clone(), state);
-            apply_mapping(&payload.in_map, &ctx_value)
-                .context("failed to evaluate provider.invoke in_map")?
+        let prev = state
+            .last_output
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Value::Object(JsonMap::new()));
+        let base_ctx = template_context(state, prev);
+
+        let input_value = if !payload.in_map.is_null() {
+            let mut ctx_value = base_ctx.clone();
+            if let Value::Object(ref mut map) = ctx_value {
+                map.insert("input".into(), payload.input.clone());
+                map.insert("result".into(), payload.input.clone());
+            }
+            render_template_value(
+                &payload.in_map,
+                &ctx_value,
+                TemplateOptions {
+                    allow_pointer: true,
+                },
+            )
+            .context("failed to render provider.invoke in_map")?
         } else if !payload.input.is_null() {
             payload.input
         } else {
             Value::Null
         };
-
-        if let Value::Object(ref mut map) = input_value {
-            map.entry("state".to_string())
-                .or_insert_with(|| state.context());
-        }
         let input_json = serde_json::to_vec(&input_value)?;
 
         let pack_idx = *self
@@ -650,9 +666,19 @@ impl FlowEngine {
         let output = if payload.out_map.is_null() {
             result
         } else {
-            let ctx_value = mapping_ctx(result, state);
-            apply_mapping(&payload.out_map, &ctx_value)
-                .context("failed to evaluate provider.invoke out_map")?
+            let mut ctx_value = base_ctx;
+            if let Value::Object(ref mut map) = ctx_value {
+                map.insert("input".into(), result.clone());
+                map.insert("result".into(), result.clone());
+            }
+            render_template_value(
+                &payload.out_map,
+                &ctx_value,
+                TemplateOptions {
+                    allow_pointer: true,
+                },
+            )
+            .context("failed to render provider.invoke out_map")?
         };
         let _ = payload.err_map;
         Ok(NodeOutput::new(output))
@@ -690,17 +716,32 @@ pub struct NodeEvent<'a> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionState {
+    #[serde(default)]
+    entry: Value,
+    #[serde(default)]
     input: Value,
+    #[serde(default)]
     nodes: HashMap<String, NodeOutput>,
+    #[serde(default)]
     egress: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_output: Option<Value>,
 }
 
 impl ExecutionState {
     fn new(input: Value) -> Self {
         Self {
+            entry: input.clone(),
             input,
             nodes: HashMap::new(),
             egress: Vec::new(),
+            last_output: None,
+        }
+    }
+
+    fn ensure_entry(&mut self) {
+        if self.entry.is_null() {
+            self.entry = self.input.clone();
         }
     }
 
@@ -717,9 +758,18 @@ impl ExecutionState {
             );
         }
         json!({
+            "entry": self.entry.clone(),
             "input": self.input.clone(),
             "nodes": nodes,
         })
+    }
+
+    fn outputs_map(&self) -> JsonMap<String, Value> {
+        let mut outputs = JsonMap::new();
+        for (id, output) in &self.nodes {
+            outputs.insert(id.clone(), output.payload.clone());
+        }
+        outputs
     }
     fn push_egress(&mut self, payload: Value) {
         self.egress.push(payload);
@@ -815,36 +865,18 @@ fn extract_wait_reason(payload: &Value) -> Option<String> {
     }
 }
 
-fn mapping_ctx(root: Value, state: &ExecutionState) -> Value {
-    json!({
-        "input": root.clone(),
-        "result": root,
-        "state": state.context(),
-    })
-}
-
-fn apply_mapping(template: &Value, ctx: &Value) -> Result<Value> {
-    match template {
-        Value::String(path) if path.starts_with('/') => ctx
-            .pointer(path)
-            .cloned()
-            .ok_or_else(|| anyhow!("mapping path `{path}` not found")),
-        Value::Array(items) => {
-            let mut mapped = Vec::with_capacity(items.len());
-            for item in items {
-                mapped.push(apply_mapping(item, ctx)?);
-            }
-            Ok(Value::Array(mapped))
-        }
-        Value::Object(map) => {
-            let mut out = serde_json::Map::new();
-            for (key, value) in map {
-                out.insert(key.clone(), apply_mapping(value, ctx)?);
-            }
-            Ok(Value::Object(out))
-        }
-        other => Ok(other.clone()),
-    }
+fn template_context(state: &ExecutionState, prev: Value) -> Value {
+    let entry = if state.entry.is_null() {
+        Value::Object(JsonMap::new())
+    } else {
+        state.entry.clone()
+    };
+    let mut ctx = JsonMap::new();
+    ctx.insert("entry".into(), entry);
+    ctx.insert("prev".into(), prev);
+    ctx.insert("node".into(), Value::Object(state.outputs_map()));
+    ctx.insert("state".into(), state.context());
+    Value::Object(ctx)
 }
 
 impl From<Flow> for HostFlow {
@@ -1090,7 +1122,7 @@ mod tests {
             NodeOutput::new(json!({ "temp": "20C" })),
         );
 
-        // templating handled via component now; ensure context still includes node outputs
+        // templating context includes node outputs for runner-side payload rendering.
         let ctx = state.context();
         assert_eq!(ctx["nodes"]["forecast"]["payload"]["temp"], json!("20C"));
     }
@@ -1160,14 +1192,13 @@ mod tests {
             payload_expr: Value::Null,
             routing: Routing::End,
         };
-        let state = ExecutionState::new(Value::Null);
+        let _state = ExecutionState::new(Value::Null);
         let payload = json!({ "component": "qa.process" });
         let err = rt
             .block_on(engine.execute_component_exec(
                 &ctx,
                 "missing-op",
                 &node,
-                &state,
                 payload,
                 ComponentOverrides {
                     component: None,
@@ -1217,14 +1248,13 @@ mod tests {
             payload_expr: Value::Null,
             routing: Routing::End,
         };
-        let state = ExecutionState::new(Value::Null);
+        let _state = ExecutionState::new(Value::Null);
         let payload = json!({ "component": "qa.process" });
         let err = rt
             .block_on(engine.execute_component_exec(
                 &ctx,
                 "missing-op-hint",
                 &node,
-                &state,
                 payload,
                 ComponentOverrides {
                     component: None,

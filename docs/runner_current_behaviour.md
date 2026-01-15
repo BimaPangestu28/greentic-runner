@@ -28,7 +28,7 @@
 
 ## 4. Hard-coded vs pack-driven behaviour
 - Builtins (runner code): control-flow + egress only (`flow.call`, `session.wait`, `emit*`).
-- Pack-driven: `component.exec` invokes pack components generically via `greentic:component@0.4.0`. MCP is expected to arrive as a pre-composed component; no MCP-specific host logic remains. QA/templating logic now lives in pack components (runner-components fixture).
+- Pack-driven: `component.exec` invokes pack components generically via `greentic:component@0.4.0`. MCP is expected to arrive as a pre-composed component; no MCP-specific host logic remains. Payload templating is runner-side; pack components focus on domain logic.
 
 ## 5. Host configuration model
 - Defined in `crates/greentic-runner-host/src/config.rs`.

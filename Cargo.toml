@@ -18,7 +18,7 @@ exclude = [
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.31"
+version = "0.4.32"
 
 [workspace.dependencies]
 arc-swap = "1"
@@ -85,6 +85,7 @@ greentic-telemetry = "0.4"
 wasmtime = { version = "40", default-features = false, features = ["component-model", "cranelift", "runtime", "std"] }
 wasmtime-wasi = { version = "40", default-features = false, features = ["p2"] }
 jsonschema = "0.38"
+handlebars = "6"
 
 [profile.release.package."echo-secret"]
 # Size-tuned build for the secrets_store_smoke fixture component.

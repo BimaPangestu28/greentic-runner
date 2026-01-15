@@ -36,10 +36,10 @@ use greentic_interfaces_wasmtime::http_client_client_v1_1::greentic::interfaces_
 use greentic_pack::builder as legacy_pack;
 use greentic_types::flow::FlowHasher;
 use greentic_types::{
-    ArtifactLocationV1, ComponentId, ComponentSourceRef, EXT_COMPONENT_SOURCES_V1, EnvId,
-    ExtensionRef, Flow, FlowComponentRef, FlowId, FlowKind, FlowMetadata, InputMapping, Node,
-    NodeId, OutputMapping, Routing, StateKey as StoreStateKey, TeamId, TelemetryHints,
-    TenantCtx as TypesTenantCtx, TenantId, UserId, decode_pack_manifest,
+    ArtifactLocationV1, ComponentId, ComponentManifest, ComponentSourceRef,
+    EXT_COMPONENT_SOURCES_V1, EnvId, ExtensionRef, Flow, FlowComponentRef, FlowId, FlowKind,
+    FlowMetadata, InputMapping, Node, NodeId, OutputMapping, Routing, StateKey as StoreStateKey,
+    TeamId, TelemetryHints, TenantCtx as TypesTenantCtx, TenantId, UserId, decode_pack_manifest,
     pack_manifest::ExtensionInline,
 };
 use host_v1::http_client::{
@@ -89,6 +89,7 @@ pub struct PackRuntime {
     metadata: PackMetadata,
     manifest: Option<greentic_types::PackManifest>,
     legacy_manifest: Option<Box<legacy_pack::PackManifest>>,
+    component_manifests: HashMap<String, ComponentManifest>,
     mocks: Option<Arc<MockLayer>>,
     flows: Option<PackFlows>,
     components: HashMap<String, PackComponent>,
@@ -188,10 +189,12 @@ pub struct HostState {
     secrets: DynSecretsManager,
     oauth_config: Option<OAuthBrokerConfig>,
     oauth_host: OAuthBrokerHost,
+    exec_ctx: Option<ComponentExecCtx>,
 }
 
 impl HostState {
     #[allow(clippy::default_constructed_unit_structs)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Arc<HostConfig>,
         http_client: Arc<BlockingClient>,
@@ -200,6 +203,7 @@ impl HostState {
         state_store: Option<DynStateStore>,
         secrets: DynSecretsManager,
         oauth_config: Option<OAuthBrokerConfig>,
+        exec_ctx: Option<ComponentExecCtx>,
     ) -> Result<Self> {
         let default_env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
         Ok(Self {
@@ -212,6 +216,7 @@ impl HostState {
             secrets,
             oauth_config,
             oauth_host: OAuthBrokerHost::default(),
+            exec_ctx,
         })
     }
 
@@ -237,6 +242,7 @@ impl HostState {
         let tenant_raw = ctx
             .as_ref()
             .map(|ctx| ctx.tenant.clone())
+            .or_else(|| self.exec_ctx.as_ref().map(|ctx| ctx.tenant.tenant.clone()))
             .unwrap_or_else(|| self.config.tenant.clone());
         let env_raw = ctx
             .as_ref()
@@ -247,6 +253,27 @@ impl HostState {
         let env_id = EnvId::from_str(&env_raw)
             .unwrap_or_else(|_| EnvId::from_str("local").expect("default env must be valid"));
         let mut tenant_ctx = TypesTenantCtx::new(env_id, tenant_id);
+        if let Some(exec_ctx) = self.exec_ctx.as_ref() {
+            if let Some(team) = exec_ctx.tenant.team.as_ref() {
+                let team_id =
+                    TeamId::from_str(team).with_context(|| format!("invalid team id `{team}`"))?;
+                tenant_ctx = tenant_ctx.with_team(Some(team_id));
+            }
+            if let Some(user) = exec_ctx.tenant.user.as_ref() {
+                let user_id =
+                    UserId::from_str(user).with_context(|| format!("invalid user id `{user}`"))?;
+                tenant_ctx = tenant_ctx.with_user(Some(user_id));
+            }
+            tenant_ctx = tenant_ctx.with_flow(exec_ctx.flow_id.clone());
+            if let Some(node) = exec_ctx.node_id.as_ref() {
+                tenant_ctx = tenant_ctx.with_node(node.clone());
+            }
+            if let Some(session) = exec_ctx.tenant.correlation_id.as_ref() {
+                tenant_ctx = tenant_ctx.with_session(session.clone());
+            }
+            tenant_ctx.trace_id = exec_ctx.tenant.trace_id.clone();
+        }
+
         if let Some(ctx) = ctx {
             if let Some(team) = ctx.team.or(ctx.team_id) {
                 let team_id =
@@ -887,7 +914,7 @@ fn add_component_control_to_linker(linker: &mut Linker<ComponentState>) -> wasmt
     Ok(())
 }
 
-pub fn register_all(linker: &mut Linker<ComponentState>) -> Result<()> {
+pub fn register_all(linker: &mut Linker<ComponentState>, allow_state_store: bool) -> Result<()> {
     add_wasi_to_linker(linker)?;
     add_all_v1_to_linker(
         linker,
@@ -898,7 +925,7 @@ pub fn register_all(linker: &mut Linker<ComponentState>) -> Result<()> {
             runner_host_http: Some(|state| state.host_mut()),
             runner_host_kv: Some(|state| state.host_mut()),
             telemetry_logger: Some(|state| state.host_mut()),
-            state_store: Some(|state| state.host_mut()),
+            state_store: allow_state_store.then_some(|state| state.host_mut()),
             secrets_store: Some(|state| state.host_mut()),
         },
     )?;
@@ -938,6 +965,25 @@ unsafe impl Send for ComponentState {}
 unsafe impl Sync for ComponentState {}
 
 impl PackRuntime {
+    fn allows_state_store(&self, component_ref: &str) -> bool {
+        if self.state_store.is_none() {
+            return false;
+        }
+        if !self.config.state_store_policy.allow {
+            return false;
+        }
+        let Some(manifest) = self.component_manifests.get(component_ref) else {
+            return false;
+        };
+        manifest
+            .capabilities
+            .host
+            .state
+            .as_ref()
+            .map(|caps| caps.read || caps.write)
+            .unwrap_or(false)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn load(
         path: impl AsRef<Path>,
@@ -1144,6 +1190,12 @@ impl PackRuntime {
             }
         };
         let http_client = Arc::clone(&HTTP_CLIENT);
+        let mut component_manifests = HashMap::new();
+        if let Some(manifest) = manifest.as_ref() {
+            for component in &manifest.components {
+                component_manifests.insert(component.id.as_str().to_string(), component.clone());
+            }
+        }
         Ok(Self {
             path: safe_path,
             archive_path: archive_hint.map(Path::to_path_buf),
@@ -1152,6 +1204,7 @@ impl PackRuntime {
             metadata,
             manifest,
             legacy_manifest,
+            component_manifests,
             mocks,
             flows,
             components,
@@ -1254,7 +1307,8 @@ impl PackRuntime {
             .with_context(|| format!("component '{component_ref}' not found in pack"))?;
 
         let mut linker = Linker::new(&self.engine);
-        register_all(&mut linker)?;
+        let allow_state_store = self.allows_state_store(component_ref);
+        register_all(&mut linker, allow_state_store)?;
         add_component_control_to_linker(&mut linker)?;
 
         let host_state = HostState::new(
@@ -1265,6 +1319,7 @@ impl PackRuntime {
             self.state_store.clone(),
             Arc::clone(&self.secrets),
             self.oauth_config.clone(),
+            Some(ctx.clone()),
         )?;
         let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
         let mut store = wasmtime::Store::new(&self.engine, store_state);
@@ -1340,7 +1395,7 @@ impl PackRuntime {
     pub async fn invoke_provider(
         &self,
         binding: &ProviderBinding,
-        _ctx: ComponentExecCtx,
+        ctx: ComponentExecCtx,
         op: &str,
         input_json: Vec<u8>,
     ) -> Result<Value> {
@@ -1351,7 +1406,8 @@ impl PackRuntime {
             .with_context(|| format!("provider component '{component_ref}' not found in pack"))?;
 
         let mut linker = Linker::new(&self.engine);
-        register_all(&mut linker)?;
+        let allow_state_store = self.allows_state_store(component_ref);
+        register_all(&mut linker, allow_state_store)?;
         add_component_control_to_linker(&mut linker)?;
         let pre_instance = linker.instantiate_pre(&pack_component.component)?;
         let pre: ProviderComponentPre<ComponentState> = ProviderComponentPre::new(pre_instance)?;
@@ -1364,6 +1420,7 @@ impl PackRuntime {
             self.state_store.clone(),
             Arc::clone(&self.secrets),
             self.oauth_config.clone(),
+            Some(ctx),
         )?;
         let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
         let mut store = wasmtime::Store::new(&self.engine, store_state);
@@ -1502,6 +1559,7 @@ impl PackRuntime {
             metadata: PackMetadata::fallback(Path::new("component-test")),
             manifest: None,
             legacy_manifest: None,
+            component_manifests: HashMap::new(),
             mocks: None,
             flows: Some(flows_cache),
             components: component_map,

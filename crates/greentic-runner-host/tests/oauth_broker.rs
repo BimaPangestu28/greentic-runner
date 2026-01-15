@@ -31,12 +31,13 @@ fn instantiate_component(wasm: &Path, config: Arc<HostConfig>) -> Result<()> {
         None,
         default_manager(),
         config.oauth_broker_config(),
+        None,
     )?;
     let policy = Arc::new(RunnerWasiPolicy::default());
     let state = ComponentState::new(host_state, policy)?;
     let mut store = Store::new(&engine, state);
     let mut linker = Linker::new(&engine);
-    pack::register_all(&mut linker)?;
+    pack::register_all(&mut linker, false)?;
     linker
         .instantiate(&mut store, &component)
         .context("component instantiation failed")?;

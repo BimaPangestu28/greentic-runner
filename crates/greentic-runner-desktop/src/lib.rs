@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use greentic_pack::reader::open_pack;
 use greentic_runner_host::RunnerWasiPolicy;
 use greentic_runner_host::config::{
-    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, StateStorePolicy, WebhookPolicy,
 };
 use greentic_runner_host::pack::{ComponentResolution, FlowDescriptor, PackMetadata, PackRuntime};
 use greentic_runner_host::runner::engine::{ExecutionObserver, FlowContext, FlowEngine, NodeEvent};
@@ -505,6 +505,7 @@ fn build_host_config(profile: &ResolvedProfile, dirs: &RunDirectories) -> HostCo
         retry: FlowRetryConfig::default(),
         http_enabled: false,
         secrets_policy: SecretsPolicy::allow_all(),
+        state_store_policy: StateStorePolicy::default(),
         webhook_policy: WebhookPolicy::default(),
         timers: Vec::new(),
         oauth: None,
