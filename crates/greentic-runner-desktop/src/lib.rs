@@ -115,6 +115,7 @@ pub struct RunOptions {
     pub components_map: HashMap<String, PathBuf>,
     pub dist_offline: bool,
     pub dist_cache_dir: Option<PathBuf>,
+    pub allow_missing_hash: bool,
 }
 
 impl Default for RunOptions {
@@ -139,6 +140,7 @@ impl fmt::Debug for RunOptions {
             .field("components_map_len", &self.components_map.len())
             .field("dist_offline", &self.dist_offline)
             .field("dist_cache_dir", &self.dist_cache_dir)
+            .field("allow_missing_hash", &self.allow_missing_hash)
             .finish()
     }
 }
@@ -227,6 +229,7 @@ pub fn desktop_defaults() -> RunOptions {
         components_map: HashMap::new(),
         dist_offline: false,
         dist_cache_dir: None,
+        allow_missing_hash: false,
     }
 }
 
@@ -290,6 +293,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
     component_resolution.overrides = opts.components_map.clone();
     component_resolution.dist_offline = opts.dist_offline;
     component_resolution.dist_cache_dir = opts.dist_cache_dir.clone();
+    component_resolution.allow_missing_hash = opts.allow_missing_hash;
     let archive_source = if pack_path
         .extension()
         .and_then(|ext| ext.to_str())

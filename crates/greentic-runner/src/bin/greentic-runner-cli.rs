@@ -82,6 +82,10 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     cache_dir: Option<PathBuf>,
 
+    /// Allow bundled components without wasm_sha256 (dev-only)
+    #[arg(long)]
+    allow_missing_hash: bool,
+
     /// Enforce strict signing (default is DevOk)
     #[arg(long)]
     strict_signing: bool,
@@ -299,6 +303,7 @@ fn main() -> Result<()> {
         opts.components_map = components_map.clone();
         opts.dist_offline = cli.offline;
         opts.dist_cache_dir = cli.cache_dir.clone();
+        opts.allow_missing_hash = cli.allow_missing_hash;
         opts.mocks = mocks_config.clone();
         if let Some(hook) = otlp_hook.clone() {
             opts.otlp = Some(hook);

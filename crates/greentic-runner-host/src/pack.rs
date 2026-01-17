@@ -121,6 +121,8 @@ pub struct ComponentResolution {
     pub dist_offline: bool,
     /// Optional cache directory for resolved remote components.
     pub dist_cache_dir: Option<PathBuf>,
+    /// Allow bundled components without wasm_sha256 (dev-only escape hatch).
+    pub allow_missing_hash: bool,
 }
 
 fn build_blocking_client() -> BlockingClient {
@@ -1096,14 +1098,32 @@ impl PackRuntime {
                 }
             }
         }
-        let component_sources_payload = if let Some(manifest) = manifest.as_ref() {
-            manifest
-                .get_component_sources_v1()
-                .context("invalid component sources extension")?
+        let mut pack_lock = None;
+        for root in find_pack_lock_roots(&safe_path, is_dir, archive_hint) {
+            pack_lock = load_pack_lock(&root)?;
+            if pack_lock.is_some() {
+                break;
+            }
+        }
+        let component_sources_payload = if pack_lock.is_none() {
+            if let Some(manifest) = manifest.as_ref() {
+                manifest
+                    .get_component_sources_v1()
+                    .context("invalid component sources extension")?
+            } else {
+                None
+            }
         } else {
             None
         };
-        let component_sources = component_sources_table(component_sources_payload.as_ref())?;
+        let component_sources = if let Some(lock) = pack_lock.as_ref() {
+            Some(component_sources_table_from_pack_lock(
+                lock,
+                component_resolution.allow_missing_hash,
+            )?)
+        } else {
+            component_sources_table(component_sources_payload.as_ref())?
+        };
         let components = if is_component {
             let wasm_bytes = fs::read(&safe_path).await?;
             metadata = PackMetadata::from_wasm(&wasm_bytes)
@@ -1128,6 +1148,7 @@ impl PackRuntime {
                 manifest.as_ref(),
                 legacy_manifest.as_deref(),
                 component_sources_payload.as_ref(),
+                pack_lock.as_ref(),
             );
             if specs.is_empty() {
                 HashMap::new()
@@ -1899,9 +1920,11 @@ struct ComponentSpec {
 
 #[derive(Clone, Debug)]
 struct ComponentSourceInfo {
-    digest: String,
+    digest: Option<String>,
     source: ComponentSourceRef,
     artifact: ComponentArtifactLocation,
+    expected_wasm_sha256: Option<String>,
+    skip_digest_verification: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1910,10 +1933,42 @@ enum ComponentArtifactLocation {
     Remote,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct PackLockV1 {
+    schema_version: u32,
+    components: Vec<PackLockComponent>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PackLockComponent {
+    name: String,
+    #[serde(default, rename = "source_ref")]
+    source_ref: Option<String>,
+    #[serde(default, rename = "ref")]
+    legacy_ref: Option<String>,
+    #[serde(default)]
+    component_id: Option<ComponentId>,
+    #[serde(default)]
+    bundled: Option<bool>,
+    #[serde(default, rename = "bundled_path")]
+    bundled_path: Option<String>,
+    #[serde(default, rename = "path")]
+    legacy_path: Option<String>,
+    #[serde(default)]
+    wasm_sha256: Option<String>,
+    #[serde(default, rename = "sha256")]
+    legacy_sha256: Option<String>,
+    #[serde(default)]
+    resolved_digest: Option<String>,
+    #[serde(default)]
+    digest: Option<String>,
+}
+
 fn component_specs(
     manifest: Option<&greentic_types::PackManifest>,
     legacy_manifest: Option<&legacy_pack::PackManifest>,
     component_sources: Option<&ComponentSourcesV1>,
+    pack_lock: Option<&PackLockV1>,
 ) -> Vec<ComponentSpec> {
     if let Some(manifest) = manifest {
         if !manifest.components.is_empty() {
@@ -1926,6 +1981,25 @@ fn component_specs(
                     legacy_path: None,
                 })
                 .collect();
+        }
+        if let Some(lock) = pack_lock {
+            let mut seen = HashSet::new();
+            let mut specs = Vec::new();
+            for entry in &lock.components {
+                let id = entry
+                    .component_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or(entry.name.as_str());
+                if seen.insert(id.to_string()) {
+                    specs.push(ComponentSpec {
+                        id: id.to_string(),
+                        version: "0.0.0".to_string(),
+                        legacy_path: None,
+                    });
+                }
+            }
+            return specs;
         }
         if let Some(sources) = component_sources {
             let mut seen = HashSet::new();
@@ -1976,9 +2050,11 @@ fn component_sources_table(
             ArtifactLocationV1::Remote => ComponentArtifactLocation::Remote,
         };
         let info = ComponentSourceInfo {
-            digest: entry.resolved.digest.clone(),
+            digest: Some(entry.resolved.digest.clone()),
             source: entry.source.clone(),
             artifact,
+            expected_wasm_sha256: None,
+            skip_digest_verification: false,
         };
         if let Some(component_id) = entry.component_id.as_ref() {
             table.insert(component_id.as_str().to_string(), info.clone());
@@ -1986,6 +2062,217 @@ fn component_sources_table(
         table.insert(entry.name.clone(), info);
     }
     Ok(Some(table))
+}
+
+fn load_pack_lock(path: &Path) -> Result<Option<PackLockV1>> {
+    let lock_path = if path.is_dir() {
+        let candidate = path.join("pack.lock");
+        if candidate.exists() {
+            Some(candidate)
+        } else {
+            let candidate = path.join("pack.lock.json");
+            candidate.exists().then_some(candidate)
+        }
+    } else {
+        None
+    };
+    let Some(lock_path) = lock_path else {
+        return Ok(None);
+    };
+    let raw = std::fs::read_to_string(&lock_path)
+        .with_context(|| format!("failed to read {}", lock_path.display()))?;
+    let lock: PackLockV1 = serde_json::from_str(&raw).context("failed to parse pack.lock")?;
+    if lock.schema_version != 1 {
+        bail!("pack.lock schema_version must be 1");
+    }
+    Ok(Some(lock))
+}
+
+fn find_pack_lock_roots(
+    pack_path: &Path,
+    is_dir: bool,
+    archive_hint: Option<&Path>,
+) -> Vec<PathBuf> {
+    if is_dir {
+        return vec![pack_path.to_path_buf()];
+    }
+    let mut roots = Vec::new();
+    if let Some(archive_path) = archive_hint {
+        if let Some(parent) = archive_path.parent() {
+            roots.push(parent.to_path_buf());
+            if let Some(grandparent) = parent.parent() {
+                roots.push(grandparent.to_path_buf());
+            }
+        }
+    } else if let Some(parent) = pack_path.parent() {
+        roots.push(parent.to_path_buf());
+        if let Some(grandparent) = parent.parent() {
+            roots.push(grandparent.to_path_buf());
+        }
+    }
+    roots
+}
+
+fn normalize_sha256(digest: &str) -> Result<String> {
+    let trimmed = digest.trim();
+    if trimmed.is_empty() {
+        bail!("sha256 digest cannot be empty");
+    }
+    if let Some(stripped) = trimmed.strip_prefix("sha256:") {
+        if stripped.is_empty() {
+            bail!("sha256 digest must include hex bytes after sha256:");
+        }
+        return Ok(trimmed.to_string());
+    }
+    if trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(format!("sha256:{trimmed}"));
+    }
+    bail!("sha256 digest must be hex or sha256:<hex>");
+}
+
+fn component_sources_table_from_pack_lock(
+    lock: &PackLockV1,
+    allow_missing_hash: bool,
+) -> Result<HashMap<String, ComponentSourceInfo>> {
+    let mut table = HashMap::new();
+    let mut names = HashSet::new();
+    for entry in &lock.components {
+        if !names.insert(entry.name.clone()) {
+            bail!(
+                "pack.lock contains duplicate component name `{}`",
+                entry.name
+            );
+        }
+        let source_ref = match (&entry.source_ref, &entry.legacy_ref) {
+            (Some(primary), Some(legacy)) => {
+                if primary != legacy {
+                    bail!(
+                        "pack.lock component {} has conflicting refs: {} vs {}",
+                        entry.name,
+                        primary,
+                        legacy
+                    );
+                }
+                primary.as_str()
+            }
+            (Some(primary), None) => primary.as_str(),
+            (None, Some(legacy)) => legacy.as_str(),
+            (None, None) => {
+                bail!("pack.lock component {} missing source_ref", entry.name);
+            }
+        };
+        let source: ComponentSourceRef = source_ref
+            .parse()
+            .with_context(|| format!("invalid component ref `{}`", source_ref))?;
+        let bundled_path = match (&entry.bundled_path, &entry.legacy_path) {
+            (Some(primary), Some(legacy)) => {
+                if primary != legacy {
+                    bail!(
+                        "pack.lock component {} has conflicting bundled paths: {} vs {}",
+                        entry.name,
+                        primary,
+                        legacy
+                    );
+                }
+                Some(primary.clone())
+            }
+            (Some(primary), None) => Some(primary.clone()),
+            (None, Some(legacy)) => Some(legacy.clone()),
+            (None, None) => None,
+        };
+        let bundled = entry.bundled.unwrap_or(false) || bundled_path.is_some();
+        let (artifact, digest, expected_wasm_sha256, skip_digest_verification) = if bundled {
+            let wasm_path = bundled_path.ok_or_else(|| {
+                anyhow!(
+                    "pack.lock component {} marked bundled but bundled_path is missing",
+                    entry.name
+                )
+            })?;
+            let expected_raw = match (&entry.wasm_sha256, &entry.legacy_sha256) {
+                (Some(primary), Some(legacy)) => {
+                    if primary != legacy {
+                        bail!(
+                            "pack.lock component {} has conflicting wasm_sha256 values: {} vs {}",
+                            entry.name,
+                            primary,
+                            legacy
+                        );
+                    }
+                    Some(primary.as_str())
+                }
+                (Some(primary), None) => Some(primary.as_str()),
+                (None, Some(legacy)) => Some(legacy.as_str()),
+                (None, None) => None,
+            };
+            let expected = match expected_raw {
+                Some(value) => Some(normalize_sha256(value)?),
+                None => None,
+            };
+            if expected.is_none() && !allow_missing_hash {
+                bail!(
+                    "pack.lock component {} missing wasm_sha256 for bundled component",
+                    entry.name
+                );
+            }
+            (
+                ComponentArtifactLocation::Inline { wasm_path },
+                expected.clone(),
+                expected,
+                allow_missing_hash && expected_raw.is_none(),
+            )
+        } else {
+            if source.is_tag() {
+                bail!(
+                    "component {} uses tag ref {} but is not bundled; rebuild the pack",
+                    entry.name,
+                    source
+                );
+            }
+            let expected = entry
+                .resolved_digest
+                .as_deref()
+                .or(entry.digest.as_deref())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "pack.lock component {} missing resolved_digest for remote component",
+                        entry.name
+                    )
+                })?;
+            (
+                ComponentArtifactLocation::Remote,
+                Some(normalize_digest(expected)),
+                None,
+                false,
+            )
+        };
+        let info = ComponentSourceInfo {
+            digest,
+            source,
+            artifact,
+            expected_wasm_sha256,
+            skip_digest_verification,
+        };
+        if let Some(component_id) = entry.component_id.as_ref() {
+            let key = component_id.as_str().to_string();
+            if table.contains_key(&key) {
+                bail!(
+                    "pack.lock contains duplicate component id `{}`",
+                    component_id.as_str()
+                );
+            }
+            table.insert(key, info.clone());
+        }
+        if entry.name
+            != entry
+                .component_id
+                .as_ref()
+                .map(|id| id.as_str())
+                .unwrap_or("")
+        {
+            table.insert(entry.name.clone(), info);
+        }
+    }
+    Ok(table)
 }
 
 fn component_path_for_spec(root: &Path, spec: &ComponentSpec) -> PathBuf {
@@ -2013,6 +2300,12 @@ fn compute_digest_for(bytes: &[u8], digest: &str) -> Result<String> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
+fn compute_sha256_digest_for(bytes: &[u8]) -> String {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
 fn verify_component_digest(component_id: &str, expected: &str, bytes: &[u8]) -> Result<()> {
     let normalized_expected = normalize_digest(expected);
     let actual = compute_digest_for(bytes, &normalized_expected)?;
@@ -2022,6 +2315,99 @@ fn verify_component_digest(component_id: &str, expected: &str, bytes: &[u8]) -> 
         );
     }
     Ok(())
+}
+
+fn verify_wasm_sha256(component_id: &str, expected: &str, bytes: &[u8]) -> Result<()> {
+    let normalized_expected = normalize_sha256(expected)?;
+    let actual = compute_sha256_digest_for(bytes);
+    if actual != normalized_expected {
+        bail!(
+            "component {component_id} bundled digest mismatch: expected {normalized_expected}, got {actual}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod pack_lock_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn pack_lock_tag_ref_requires_bundle() {
+        let lock = PackLockV1 {
+            schema_version: 1,
+            components: vec![PackLockComponent {
+                name: "templates".to_string(),
+                source_ref: Some("oci://registry.test/templates:latest".to_string()),
+                legacy_ref: None,
+                component_id: None,
+                bundled: Some(false),
+                bundled_path: None,
+                legacy_path: None,
+                wasm_sha256: None,
+                legacy_sha256: None,
+                resolved_digest: None,
+                digest: None,
+            }],
+        };
+        let err = component_sources_table_from_pack_lock(&lock, false).unwrap_err();
+        assert!(
+            err.to_string().contains("tag ref") && err.to_string().contains("rebuild the pack"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn bundled_hash_mismatch_errors() {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let temp = TempDir::new().expect("temp dir");
+        let wasm_path = temp.path().join("component.wasm");
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/runner-components");
+        let fixture_wasm = fixture_root.join("target/wasm32-wasip2/release/qa_process.wasm");
+        let bytes = std::fs::read(&fixture_wasm).expect("read fixture wasm");
+        std::fs::write(&wasm_path, &bytes).expect("write temp wasm");
+
+        let spec = ComponentSpec {
+            id: "qa.process".to_string(),
+            version: "0.0.0".to_string(),
+            legacy_path: None,
+        };
+        let mut missing = HashSet::new();
+        missing.insert(spec.id.clone());
+
+        let mut sources = HashMap::new();
+        sources.insert(
+            spec.id.clone(),
+            ComponentSourceInfo {
+                digest: Some("sha256:deadbeef".to_string()),
+                source: ComponentSourceRef::Oci("registry.test/qa.process@sha256:deadbeef".into()),
+                artifact: ComponentArtifactLocation::Inline {
+                    wasm_path: "component.wasm".to_string(),
+                },
+                expected_wasm_sha256: Some("sha256:deadbeef".to_string()),
+                skip_digest_verification: false,
+            },
+        );
+
+        let mut loaded = HashMap::new();
+        let result = rt.block_on(load_components_from_sources(
+            &Engine::default(),
+            &sources,
+            &ComponentResolution::default(),
+            &[spec],
+            &mut missing,
+            &mut loaded,
+            Some(temp.path()),
+            None,
+        ));
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("bundled digest mismatch"),
+            "unexpected error: {err}"
+        );
+    }
 }
 
 fn dist_options_from(component_resolution: &ComponentResolution) -> DistOptions {
@@ -2108,13 +2494,26 @@ async fn load_components_from_sources(
                 }
             }
             ComponentArtifactLocation::Remote => {
+                if source.source.is_tag() {
+                    bail!(
+                        "component {} uses tag ref {} but is not bundled; rebuild the pack",
+                        spec.id,
+                        source.source
+                    );
+                }
                 let client = dist_client.get_or_insert_with(|| {
                     DistClient::new(dist_options_from(component_resolution))
                 });
                 let reference = source.source.to_string();
+                let digest = source.digest.as_deref().ok_or_else(|| {
+                    anyhow!(
+                        "component {} missing expected digest for remote component",
+                        spec.id
+                    )
+                })?;
                 let cache_path = if component_resolution.dist_offline {
                     client
-                        .fetch_digest(&source.digest)
+                        .fetch_digest(digest)
                         .await
                         .map_err(|err| dist_error_for_component(err, &spec.id, &reference))?
                 } else {
@@ -2122,7 +2521,7 @@ async fn load_components_from_sources(
                         .resolve_ref(&reference)
                         .await
                         .map_err(|err| dist_error_for_component(err, &spec.id, &reference))?;
-                    let expected = normalize_digest(&source.digest);
+                    let expected = normalize_digest(digest);
                     let actual = normalize_digest(&resolved.digest);
                     if expected != actual {
                         bail!(
@@ -2150,7 +2549,24 @@ async fn load_components_from_sources(
             }
         };
 
-        verify_component_digest(&spec.id, &source.digest, &bytes)?;
+        if let Some(expected) = source.expected_wasm_sha256.as_deref() {
+            verify_wasm_sha256(&spec.id, expected, &bytes)?;
+        } else if source.skip_digest_verification {
+            let actual = compute_sha256_digest_for(&bytes);
+            warn!(
+                component_id = %spec.id,
+                digest = %actual,
+                "bundled component missing wasm_sha256; allowing due to flag"
+            );
+        } else {
+            let expected = source.digest.as_deref().ok_or_else(|| {
+                anyhow!(
+                    "component {} missing expected digest for verification",
+                    spec.id
+                )
+            })?;
+            verify_component_digest(&spec.id, expected, &bytes)?;
+        }
         let component = Component::from_binary(engine, &bytes)
             .with_context(|| format!("failed to compile component {}", spec.id))?;
         into.insert(
