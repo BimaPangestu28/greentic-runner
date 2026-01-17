@@ -25,6 +25,7 @@ use runner_core::env::PackConfig;
 use tokio::signal;
 
 pub mod boot;
+pub mod cache;
 pub mod component_api;
 pub mod config;
 pub mod engine;

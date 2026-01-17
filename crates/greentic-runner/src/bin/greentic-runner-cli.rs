@@ -82,6 +82,10 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     cache_dir: Option<PathBuf>,
 
+    /// Disable the component compilation cache
+    #[arg(long)]
+    no_cache: bool,
+
     /// Allow bundled components without wasm_sha256 (dev-only)
     #[arg(long)]
     allow_missing_hash: bool,
@@ -265,6 +269,12 @@ fn main() -> Result<()> {
     println!("Run logs: {}", log_path.display());
     configure_wasmtime_home()?;
     configure_proxy_env();
+    if cli.no_cache {
+        // SAFETY: toggling the cache behavior is scoped to this process.
+        unsafe {
+            std::env::set_var("GREENTIC_NO_CACHE", "1");
+        }
+    }
 
     let input = parse_input(&cli)?;
 

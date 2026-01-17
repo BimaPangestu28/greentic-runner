@@ -25,6 +25,7 @@ greentic-interfaces-host.workspace = true
 greentic-interfaces-wasmtime.workspace = true
 greentic-types.workspace = true
 greentic-config.workspace = true
+greentic-distributor-client.workspace = true
 humantime.workspace = true
 runner-core = { workspace = true }
 chrono.workspace = true

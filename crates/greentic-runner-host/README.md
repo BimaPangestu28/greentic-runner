@@ -72,6 +72,12 @@ During a reload the watcher resolves each locator (filesystem, HTTPS, OCI, S3, G
 
 Runner can also execute a materialized pack directory (contains `manifest.cbor`, flows/templates, and `components/<id>.wasm`) or a `.gtpack` paired with local component files. Component resolution now prefers explicit overrides, then the materialized directory, and finally embedded archive entries; missing components raise a clear error. The desktop CLI exposes `--components-dir` / `--components-map` so distributor-produced layouts can run without the runner fetching OCI components itself.
 
+### Component cache (preview)
+
+The runner exposes a cache module for compiled component artifacts. Each cache entry is scoped by an **EngineProfile** (Wasmtime version, target triple, CPU policy, and a config fingerprint) and an **ArtifactKey** (`engine_profile_id` + `wasm_digest`). Disk entries are namespaced under `<cache_root>/v1/<engine_profile_id>/...` to prevent cross-version contamination.
+
+The cache manager is wired into component loading with disk + memory tiers. Disk entries are serialized Wasmtime components with metadata; memory entries hold `Arc<Component>` with bounded eviction. The API surface (`CacheManager::get_component`, `warmup`, `doctor`, `prune_disk`) is available for future CLI extensions and diagnostics.
+
 ### Pause & resume semantics
 
 Packs can pause mid-flow by emitting the `session.wait` component. The host persists the `FlowSnapshot` (current node pointer + execution state) into `greentic-session`. The next inbound activity for the same canonical session key (`tenant:provider:channel:conversation:user`) automatically resumes the stored snapshot, continues execution, and clears the entry when the flow completes. This makes multi-message LLM flows and human-in-the-loop approvals idempotent without bespoke session wiring.

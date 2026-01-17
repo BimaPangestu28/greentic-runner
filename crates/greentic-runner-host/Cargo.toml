@@ -63,6 +63,8 @@ sha1.workspace = true
 blake3.workspace = true
 once_cell.workspace = true
 handlebars.workspace = true
+dashmap.workspace = true
+wasmtime-environ.workspace = true
 
 # External stack components
 wasmtime = { workspace = true }

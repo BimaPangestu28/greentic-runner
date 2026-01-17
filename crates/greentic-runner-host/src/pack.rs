@@ -6,6 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cache::{ArtifactKey, CacheConfig, CacheManager, CpuPolicy, EngineProfile};
 use crate::component_api::{
     self, node::ExecCtx as ComponentExecCtx, node::InvokeResult, node::NodeError,
 };
@@ -101,6 +102,7 @@ pub struct PackRuntime {
     provider_registry: RwLock<Option<ProviderRegistry>>,
     secrets: DynSecretsManager,
     oauth_config: Option<OAuthBrokerConfig>,
+    cache: CacheManager,
 }
 
 struct PackComponent {
@@ -108,7 +110,7 @@ struct PackComponent {
     name: String,
     #[allow(dead_code)]
     version: String,
-    component: Component,
+    component: Arc<Component>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1036,6 +1038,9 @@ impl PackRuntime {
             }
         }
         let engine = Engine::default();
+        let engine_profile =
+            EngineProfile::from_engine(&engine, CpuPolicy::Native, "default".to_string());
+        let cache = CacheManager::new(CacheConfig::default(), engine_profile);
         let mut metadata = PackMetadata::fallback(&safe_path);
         let mut manifest = None;
         let mut legacy_manifest: Option<Box<legacy_pack::PackManifest>> = None;
@@ -1132,7 +1137,7 @@ impl PackRuntime {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "component".to_string());
-            let component = Component::from_binary(&engine, &wasm_bytes)?;
+            let component = compile_component_with_cache(&cache, &engine, None, wasm_bytes).await?;
             let mut map = HashMap::new();
             map.insert(
                 name.clone(),
@@ -1160,17 +1165,20 @@ impl PackRuntime {
 
                 if !component_resolution.overrides.is_empty() {
                     load_components_from_overrides(
+                        &cache,
                         &engine,
                         &component_resolution.overrides,
                         &specs,
                         &mut missing,
                         &mut loaded,
-                    )?;
+                    )
+                    .await?;
                     searched.push("override map".to_string());
                 }
 
                 if let Some(component_sources) = component_sources.as_ref() {
                     load_components_from_sources(
+                        &cache,
                         &engine,
                         component_sources,
                         &component_resolution,
@@ -1185,18 +1193,28 @@ impl PackRuntime {
                 }
 
                 if let Some(root) = materialized_root.as_ref() {
-                    load_components_from_dir(&engine, root, &specs, &mut missing, &mut loaded)?;
+                    load_components_from_dir(
+                        &cache,
+                        &engine,
+                        root,
+                        &specs,
+                        &mut missing,
+                        &mut loaded,
+                    )
+                    .await?;
                     searched.push(format!("components dir {}", root.display()));
                 }
 
                 if let Some(archive_path) = archive_hint {
                     load_components_from_archive(
+                        &cache,
                         &engine,
                         archive_path,
                         &specs,
                         &mut missing,
                         &mut loaded,
-                    )?;
+                    )
+                    .await?;
                     searched.push(format!("archive {}", archive_path.display()));
                 }
 
@@ -1244,6 +1262,7 @@ impl PackRuntime {
             provider_registry: RwLock::new(None),
             secrets,
             oauth_config,
+            cache,
         })
     }
 
@@ -1351,7 +1370,7 @@ impl PackRuntime {
         )?;
         let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
         let mut store = wasmtime::Store::new(&self.engine, store_state);
-        let pre_instance = linker.instantiate_pre(&pack_component.component)?;
+        let pre_instance = linker.instantiate_pre(pack_component.component.as_ref())?;
         let result = match component_api::v0_5::ComponentPre::new(pre_instance) {
             Ok(pre) => {
                 let bindings = pre.instantiate_async(&mut store).await?;
@@ -1362,7 +1381,7 @@ impl PackRuntime {
             }
             Err(err) => {
                 if is_missing_node_export(&err, "0.5.0") {
-                    let pre_instance = linker.instantiate_pre(&pack_component.component)?;
+                    let pre_instance = linker.instantiate_pre(pack_component.component.as_ref())?;
                     let pre: component_api::v0_4::ComponentPre<ComponentState> =
                         component_api::v0_4::ComponentPre::new(pre_instance)?;
                     let bindings = pre.instantiate_async(&mut store).await?;
@@ -1437,7 +1456,7 @@ impl PackRuntime {
         let allow_state_store = self.allows_state_store(component_ref);
         register_all(&mut linker, allow_state_store)?;
         add_component_control_to_linker(&mut linker)?;
-        let pre_instance = linker.instantiate_pre(&pack_component.component)?;
+        let pre_instance = linker.instantiate_pre(pack_component.component.as_ref())?;
         let pre: ProviderComponentPre<ComponentState> = ProviderComponentPre::new(pre_instance)?;
 
         let host_state = HostState::new(
@@ -1541,14 +1560,19 @@ impl PackRuntime {
         config: Arc<HostConfig>,
     ) -> Result<Self> {
         let engine = Engine::default();
+        let engine_profile =
+            EngineProfile::from_engine(&engine, CpuPolicy::Native, "default".to_string());
+        let cache = CacheManager::new(CacheConfig::default(), engine_profile);
         let mut component_map = HashMap::new();
         for (name, path) in components {
             if !path.exists() {
                 bail!("component artifact missing: {}", path.display());
             }
             let wasm_bytes = std::fs::read(&path)?;
-            let component = Component::from_binary(&engine, &wasm_bytes)
-                .with_context(|| format!("failed to compile component {}", path.display()))?;
+            let component = Arc::new(
+                Component::from_binary(&engine, &wasm_bytes)
+                    .with_context(|| format!("failed to compile component {}", path.display()))?,
+            );
             component_map.insert(
                 name.clone(),
                 PackComponent {
@@ -1599,6 +1623,7 @@ impl PackRuntime {
             provider_registry: RwLock::new(None),
             secrets: crate::secrets::default_manager(),
             oauth_config: None,
+            cache,
         })
     }
 }
@@ -2306,6 +2331,23 @@ fn compute_sha256_digest_for(bytes: &[u8]) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
+fn build_artifact_key(cache: &CacheManager, digest: Option<&str>, bytes: &[u8]) -> ArtifactKey {
+    let wasm_digest = digest
+        .map(normalize_digest)
+        .unwrap_or_else(|| compute_sha256_digest_for(bytes));
+    ArtifactKey::new(cache.engine_profile_id().to_string(), wasm_digest)
+}
+
+async fn compile_component_with_cache(
+    cache: &CacheManager,
+    engine: &Engine,
+    digest: Option<&str>,
+    bytes: Vec<u8>,
+) -> Result<Arc<Component>> {
+    let key = build_artifact_key(cache, digest, &bytes);
+    cache.get_component(engine, &key, || Ok(bytes)).await
+}
+
 fn verify_component_digest(component_id: &str, expected: &str, bytes: &[u8]) -> Result<()> {
     let normalized_expected = normalize_digest(expected);
     let actual = compute_digest_for(bytes, &normalized_expected)?;
@@ -2362,6 +2404,14 @@ mod pack_lock_tests {
     fn bundled_hash_mismatch_errors() {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let temp = TempDir::new().expect("temp dir");
+        let engine = Engine::default();
+        let engine_profile =
+            EngineProfile::from_engine(&engine, CpuPolicy::Native, "default".to_string());
+        let cache_config = CacheConfig {
+            root: temp.path().join("cache"),
+            ..CacheConfig::default()
+        };
+        let cache = CacheManager::new(cache_config, engine_profile);
         let wasm_path = temp.path().join("component.wasm");
         let fixture_wasm = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/packs/secrets_store_smoke/components/echo_secret.wasm");
@@ -2392,7 +2442,8 @@ mod pack_lock_tests {
 
         let mut loaded = HashMap::new();
         let result = rt.block_on(load_components_from_sources(
-            &Engine::default(),
+            &cache,
+            &engine,
             &sources,
             &ComponentResolution::default(),
             &[spec],
@@ -2425,6 +2476,7 @@ fn dist_options_from(component_resolution: &ComponentResolution) -> DistOptions 
 
 #[allow(clippy::too_many_arguments)]
 async fn load_components_from_sources(
+    cache: &CacheManager,
     engine: &Engine,
     component_sources: &HashMap<String, ComponentSourceInfo>,
     component_resolution: &ComponentResolution,
@@ -2566,8 +2618,10 @@ async fn load_components_from_sources(
             })?;
             verify_component_digest(&spec.id, expected, &bytes)?;
         }
-        let component = Component::from_binary(engine, &bytes)
-            .with_context(|| format!("failed to compile component {}", spec.id))?;
+        let component =
+            compile_component_with_cache(cache, engine, source.digest.as_deref(), bytes)
+                .await
+                .with_context(|| format!("failed to compile component {}", spec.id))?;
         into.insert(
             spec.id.clone(),
             PackComponent {
@@ -2611,7 +2665,8 @@ fn dist_error_for_component(err: DistError, component_id: &str, reference: &str)
     }
 }
 
-fn load_components_from_overrides(
+async fn load_components_from_overrides(
+    cache: &CacheManager,
     engine: &Engine,
     overrides: &HashMap<String, PathBuf>,
     specs: &[ComponentSpec],
@@ -2627,13 +2682,15 @@ fn load_components_from_overrides(
         };
         let bytes = std::fs::read(path)
             .with_context(|| format!("failed to read override component {}", path.display()))?;
-        let component = Component::from_binary(engine, &bytes).with_context(|| {
-            format!(
-                "failed to compile component {} from override {}",
-                spec.id,
-                path.display()
-            )
-        })?;
+        let component = compile_component_with_cache(cache, engine, None, bytes)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to compile component {} from override {}",
+                    spec.id,
+                    path.display()
+                )
+            })?;
         into.insert(
             spec.id.clone(),
             PackComponent {
@@ -2647,7 +2704,8 @@ fn load_components_from_overrides(
     Ok(())
 }
 
-fn load_components_from_dir(
+async fn load_components_from_dir(
+    cache: &CacheManager,
     engine: &Engine,
     root: &Path,
     specs: &[ComponentSpec],
@@ -2665,13 +2723,15 @@ fn load_components_from_dir(
         }
         let bytes = std::fs::read(&path)
             .with_context(|| format!("failed to read component {}", path.display()))?;
-        let component = Component::from_binary(engine, &bytes).with_context(|| {
-            format!(
-                "failed to compile component {} from {}",
-                spec.id,
-                path.display()
-            )
-        })?;
+        let component = compile_component_with_cache(cache, engine, None, bytes)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to compile component {} from {}",
+                    spec.id,
+                    path.display()
+                )
+            })?;
         into.insert(
             spec.id.clone(),
             PackComponent {
@@ -2685,7 +2745,8 @@ fn load_components_from_dir(
     Ok(())
 }
 
-fn load_components_from_archive(
+async fn load_components_from_archive(
+    cache: &CacheManager,
     engine: &Engine,
     path: &Path,
     specs: &[ComponentSpec],
@@ -2709,7 +2770,8 @@ fn load_components_from_archive(
                 continue;
             }
         };
-        let component = Component::from_binary(engine, &bytes)
+        let component = compile_component_with_cache(cache, engine, None, bytes)
+            .await
             .with_context(|| format!("failed to compile component {}", spec.id))?;
         into.insert(
             spec.id.clone(),

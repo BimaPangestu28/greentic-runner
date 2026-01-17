@@ -1506,9 +1506,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-distributor-client"
-version = "0.4.25"
+version = "0.4.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "261eb9d026da843d05d9f3591fe44f53afd9979dcdbac9f1b6cbd33bdbc831b4"
+checksum = "86e9e7bcb2689b0bf29d4d5d347343fccbf9dcbca7bef5f6cc77f75000b79b6e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1614,9 +1614,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-pack-lib"
-version = "0.4.56"
+version = "0.4.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f167b5707bbabfeb7c496f360c113b9d155be1a1e811f56f3e8c33d98d078d96"
+checksum = "6ee9ac3496848a66d2f3cab3d231220676d5de146a392f11af16caa486f1c714"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1644,13 +1644,14 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner"
-version = "0.4.34"
+version = "0.4.35"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
  "clap",
  "greentic-config",
+ "greentic-distributor-client",
  "greentic-interfaces",
  "greentic-interfaces-host",
  "greentic-interfaces-wasmtime",
@@ -1676,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-desktop"
-version = "0.4.34"
+version = "0.4.35"
 dependencies = [
  "anyhow",
  "greentic-pack-lib",
@@ -1695,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-runner-host"
-version = "0.4.34"
+version = "0.4.35"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1706,6 +1707,7 @@ dependencies = [
  "bytes",
  "chrono",
  "cron",
+ "dashmap",
  "futures",
  "greentic-config",
  "greentic-config-types",
@@ -1748,13 +1750,14 @@ dependencies = [
  "url",
  "wasmparser 0.244.0",
  "wasmtime",
+ "wasmtime-environ",
  "wasmtime-wasi",
  "zip",
 ]
 
 [[package]]
 name = "greentic-runner-tests"
-version = "0.4.34"
+version = "0.4.35"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3563,7 +3566,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.4.34"
+version = "0.4.35"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
