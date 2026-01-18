@@ -73,9 +73,13 @@ struct RunArgs {
     #[arg(long = "config-explain")]
     config_explain: bool,
 
-    /// Bindings yaml describing tenant configuration (repeat per tenant)
+    /// Pack bindings file or directory containing *.gtbind (repeatable)
     #[arg(long = "bindings", value_name = "PATH")]
     bindings: Vec<PathBuf>,
+
+    /// Directory containing *.gtbind files (repeatable)
+    #[arg(long = "bindings-dir", value_name = "DIR")]
+    bindings_dir: Vec<PathBuf>,
 
     /// Port to serve the HTTP server on (default 8080)
     #[arg(long, default_value = "8080")]
@@ -108,7 +112,7 @@ async fn run() -> anyhow::Result<()> {
             std::env::set_var("GREENTIC_NO_CACHE", "1");
         }
     }
-    if run.bindings.is_empty() {
+    if run.bindings.is_empty() && run.bindings_dir.is_empty() {
         bail!("at least one --bindings path is required");
     }
     let (resolver, _) = build_resolver(run.config.as_deref(), run.allow_dev)?;
@@ -119,7 +123,9 @@ async fn run() -> anyhow::Result<()> {
         println!("{}", report.text);
         return Ok(());
     }
-    let cfg = RunnerConfig::from_config(resolved, run.bindings)?.with_port(run.port);
+    let bindings =
+        greentic_runner_host::gtbind::collect_gtbind_paths(&run.bindings, &run.bindings_dir)?;
+    let cfg = RunnerConfig::from_config(resolved, bindings)?.with_port(run.port);
     run_host(cfg).await
 }
 

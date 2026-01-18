@@ -56,6 +56,7 @@ pub async fn dispatch(
     let envelope = IngressEnvelope {
         tenant: tenant.clone(),
         env: None,
+        pack_id: Some(flow.pack_id.clone()),
         flow_id: flow.id.clone(),
         flow_type: Some(flow.flow_type.clone()),
         action: Some("webhook".into()),
@@ -68,6 +69,7 @@ pub async fn dispatch(
         timestamp: None,
         payload: normalized,
         metadata: None,
+        reply_scope: None,
     }
     .canonicalize();
 

@@ -31,7 +31,7 @@ secrets are wired today.
   - `--config-explain` – print the resolved config (with provenance/warnings)
     and exit.
   - `--port <u16>` – overrides the HTTP port before calling `run`.
-- **Additional tooling** – `greentic-gen-bindings` accepts `--pack`, `--component`,
+- **Additional tooling** – `greentic-gen-bindings` accepts a `.gtpack`, `--pack-dir`, `--component`,
   `--out`, `--complete`, `--strict`, and `--pretty` to control pack inspection.
 
 ### `greentic-runner-host` (canonical runtime shim)
@@ -171,7 +171,7 @@ secrets are wired today.
 | Binary | Flags |
 | --- | --- |
 | `greentic-runner` | `--bindings <PATH>` (repeat per tenant bindings file), `--config <PATH>`, `--allow-dev`, `--config-explain`, `--port <u16>` |
-| `greentic-gen-bindings` | `--pack <DIR>`, `--component <FILE>`, `--out <FILE>`, `--complete`, `--strict`, `--pretty` |
+| `greentic-gen-bindings` | `<PACK>.gtpack`, `--pack-dir <DIR>`, `--component <FILE>`, `--out <FILE>`, `--complete`, `--strict`, `--pretty` |
 
 Runtime behaviour is primarily driven by greentic-config (packs, paths, network,
 telemetry, secrets, dev defaults). Remaining env vars tweak the watcher cadence,

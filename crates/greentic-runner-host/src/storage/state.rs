@@ -83,7 +83,10 @@ fn tenant_ctx_from_key(key: &SessionKey) -> GResult<TenantCtx> {
 
 fn derive_state_key(key: &SessionKey) -> StoreStateKey {
     let hint = key.session_hint.as_deref().unwrap_or("-");
-    StoreStateKey::from(format!("{}::{hint}", key.flow_id))
+    StoreStateKey::from(format!(
+        "pack/{}/flow/{}/session/{hint}",
+        key.pack_id, key.flow_id
+    ))
 }
 
 fn map_state_error(err: greentic_types::GreenticError) -> RunnerError {

@@ -1,3 +1,5 @@
+use crate::gtbind::PackBinding;
+use crate::gtbind::TenantBindings;
 use crate::oauth::OAuthBrokerConfig;
 use crate::runner::mocks::MocksConfig;
 use anyhow::{Context, Result};
@@ -22,6 +24,8 @@ pub struct HostConfig {
     pub timers: Vec<TimerBinding>,
     pub oauth: Option<OAuthConfig>,
     pub mocks: Option<MocksConfig>,
+    pub pack_bindings: Vec<PackBinding>,
+    pub env_passthrough: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -150,7 +154,28 @@ impl HostConfig {
             timers: bindings.timers.clone(),
             oauth: bindings.oauth.clone(),
             mocks: bindings.mocks.clone(),
+            pack_bindings: Vec::new(),
+            env_passthrough: Vec::new(),
         })
+    }
+
+    pub fn from_gtbind(bindings: TenantBindings) -> Self {
+        Self {
+            tenant: bindings.tenant,
+            bindings_path: PathBuf::from("<gtbind>"),
+            flow_type_bindings: HashMap::new(),
+            rate_limits: RateLimits::default(),
+            retry: FlowRetryConfig::default(),
+            http_enabled: false,
+            secrets_policy: SecretsPolicy::allow_all(),
+            state_store_policy: StateStorePolicy::default(),
+            webhook_policy: WebhookPolicy::default(),
+            timers: Vec::new(),
+            oauth: None,
+            mocks: None,
+            pack_bindings: bindings.packs,
+            env_passthrough: bindings.env_passthrough,
+        }
     }
 
     pub fn messaging_binding(&self) -> Option<&FlowBinding> {
@@ -314,6 +339,8 @@ mod tests {
             timers: Vec::new(),
             oauth,
             mocks: None,
+            pack_bindings: Vec::new(),
+            env_passthrough: Vec::new(),
         }
     }
 

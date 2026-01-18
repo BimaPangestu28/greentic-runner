@@ -61,7 +61,7 @@ fn run_component(wasm: &Path, config: Arc<HostConfig>, policy: RunnerWasiPolicy)
         None,
         None,
         None,
-        default_manager(),
+        default_manager()?,
         None,
         None,
     )?;

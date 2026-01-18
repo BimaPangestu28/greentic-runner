@@ -176,6 +176,7 @@ pub struct FlowDescriptor {
     pub id: String,
     #[serde(rename = "type")]
     pub flow_type: String,
+    pub pack_id: String,
     pub profile: String,
     pub version: String,
     #[serde(default)]
@@ -236,7 +237,8 @@ impl HostState {
         {
             return Ok(value);
         }
-        let bytes = read_secret_blocking(&self.secrets, key)
+        let ctx = self.config.tenant_ctx();
+        let bytes = read_secret_blocking(&self.secrets, &ctx, key)
             .context("failed to read secret from manager")?;
         let value = String::from_utf8(bytes).context("secret value is not valid UTF-8")?;
         Ok(value)
@@ -436,7 +438,8 @@ impl SecretsStoreHost for HostState {
         {
             return Ok(Some(value.into_bytes()));
         }
-        match read_secret_blocking(&self.secrets, &key) {
+        let ctx = self.config.tenant_ctx();
+        match read_secret_blocking(&self.secrets, &ctx, &key) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(err) => {
                 warn!(secret = %key, error = %err, "secret lookup failed");
@@ -768,6 +771,7 @@ fn load_legacy_flows(
         descriptors.push(FlowDescriptor {
             id: entry.id.clone(),
             flow_type: entry.kind.clone(),
+            pack_id: manifest.meta.pack_id.clone(),
             profile: manifest.meta.pack_id.clone(),
             version: manifest.meta.version.to_string(),
             description: None,
@@ -813,6 +817,7 @@ fn load_legacy_flows_from_dir(
         descriptors.push(FlowDescriptor {
             id: entry.id.clone(),
             flow_type: entry.kind.clone(),
+            pack_id: manifest.meta.pack_id.clone(),
             profile: manifest.meta.pack_id.clone(),
             version: manifest.meta.version.to_string(),
             description: None,
@@ -1277,6 +1282,7 @@ impl PackRuntime {
                 .map(|flow| FlowDescriptor {
                     id: flow.id.as_str().to_string(),
                     flow_type: flow_kind_to_str(flow.kind).to_string(),
+                    pack_id: manifest.pack_id.as_str().to_string(),
                     profile: manifest.pack_id.as_str().to_string(),
                     version: manifest.version.to_string(),
                     description: None,
@@ -1317,6 +1323,7 @@ impl PackRuntime {
 
         let ctx = FlowContext {
             tenant,
+            pack_id: pack.metadata().pack_id.as_str(),
             flow_id,
             node_id: None,
             tool: None,
@@ -1548,7 +1555,8 @@ impl PackRuntime {
                         return false;
                     }
                 }
-                read_secret_blocking(&self.secrets, req.key.as_str()).is_err()
+                let ctx = self.config.tenant_ctx();
+                read_secret_blocking(&self.secrets, &ctx, req.key.as_str()).is_err()
             })
             .cloned()
             .collect()
@@ -1557,6 +1565,7 @@ impl PackRuntime {
     pub fn for_component_test(
         components: Vec<(String, PathBuf)>,
         flows: HashMap<String, FlowIR>,
+        pack_id: &str,
         config: Arc<HostConfig>,
     ) -> Result<Self> {
         let engine = Engine::default();
@@ -1592,15 +1601,23 @@ impl PackRuntime {
             descriptors.push(FlowDescriptor {
                 id: id.clone(),
                 flow_type,
+                pack_id: pack_id.to_string(),
                 profile: "test".into(),
                 version: "0.0.0".into(),
                 description: None,
             });
         }
+        let entry_flows = descriptors.iter().map(|flow| flow.id.clone()).collect();
+        let metadata = PackMetadata {
+            pack_id: pack_id.to_string(),
+            version: "0.0.0".into(),
+            entry_flows,
+            secret_requirements: Vec::new(),
+        };
         let flows_cache = PackFlows {
             descriptors: descriptors.clone(),
             flows: flow_map,
-            metadata: PackMetadata::fallback(Path::new("component-test")),
+            metadata: metadata.clone(),
         };
 
         Ok(Self {
@@ -1608,7 +1625,7 @@ impl PackRuntime {
             archive_path: None,
             config,
             engine,
-            metadata: PackMetadata::fallback(Path::new("component-test")),
+            metadata,
             manifest: None,
             legacy_manifest: None,
             component_manifests: HashMap::new(),
@@ -1621,7 +1638,7 @@ impl PackRuntime {
             state_store: None,
             wasi_policy: Arc::new(RunnerWasiPolicy::new()),
             provider_registry: RwLock::new(None),
-            secrets: crate::secrets::default_manager(),
+            secrets: crate::secrets::default_manager()?,
             oauth_config: None,
             cache,
         })
@@ -1703,6 +1720,7 @@ impl PackFlows {
             .map(|entry| FlowDescriptor {
                 id: entry.id.as_str().to_string(),
                 flow_type: flow_kind_to_str(entry.kind).to_string(),
+                pack_id: manifest.pack_id.as_str().to_string(),
                 profile: manifest.pack_id.as_str().to_string(),
                 version: manifest.version.to_string(),
                 description: None,
@@ -1742,6 +1760,7 @@ fn flows_from_runtime_extension(manifest: &greentic_types::PackManifest) -> Opti
         .map(|flow| FlowDescriptor {
             id: flow.id.as_str().to_string(),
             flow_type: flow_kind_to_str(flow.kind).to_string(),
+            pack_id: manifest.pack_id.as_str().to_string(),
             profile: manifest.pack_id.as_str().to_string(),
             version: manifest.version.to_string(),
             description: None,

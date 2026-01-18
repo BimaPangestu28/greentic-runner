@@ -281,7 +281,8 @@ impl TenantRuntime {
         if !self.config.secrets_policy.is_allowed(key) {
             bail!("secret {key} is not permitted by bindings policy");
         }
-        let bytes = read_secret_blocking(&self.secrets, key)
+        let ctx = self.config.tenant_ctx();
+        let bytes = read_secret_blocking(&self.secrets, &ctx, key)
             .context("failed to read secret from manager")?;
         let value = String::from_utf8(bytes).context("secret value is not valid UTF-8")?;
         Ok(value)

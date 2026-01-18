@@ -87,7 +87,10 @@ impl HostBuilder {
         let session_host = session_host_from(Arc::clone(&session_store));
         let state_store = new_state_store();
         let state_host = state_host_from(Arc::clone(&state_store));
-        let secrets = self.secrets.unwrap_or_else(default_manager);
+        let secrets = match self.secrets {
+            Some(manager) => manager,
+            None => default_manager().context("failed to initialise default secrets backend")?,
+        };
         Ok(RunnerHost {
             configs,
             active: Arc::new(ActivePacks::new()),
@@ -171,7 +174,7 @@ impl RunnerHost {
             .active
             .load(tenant)
             .with_context(|| format!("tenant {tenant} not loaded"))?;
-        let flow_id = resolve_flow_id(&runtime, &activity)?;
+        let (pack_id, flow_id) = resolve_flow_id(&runtime, &activity)?;
         let action = activity.action().map(|value| value.to_string());
         let session = activity.session_id().map(|value| value.to_string());
         let provider = activity.provider_id().map(|value| value.to_string());
@@ -184,7 +187,7 @@ impl RunnerHost {
             .or_else(|| {
                 runtime
                     .engine()
-                    .flow_by_id(&flow_id)
+                    .flow_by_key(&pack_id, &flow_id)
                     .map(|desc| desc.flow_type.clone())
             });
         let payload = activity.into_payload();
@@ -192,6 +195,7 @@ impl RunnerHost {
         let envelope = IngressEnvelope {
             tenant: tenant.to_string(),
             env: std::env::var("GREENTIC_ENV").ok(),
+            pack_id: Some(pack_id.clone()),
             flow_id: flow_id.clone(),
             flow_type,
             action,
@@ -204,6 +208,7 @@ impl RunnerHost {
             timestamp: None,
             payload,
             metadata: None,
+            reply_scope: None,
         }
         .canonicalize();
 
@@ -312,18 +317,46 @@ impl TenantHandle {
     }
 }
 
-fn resolve_flow_id(runtime: &TenantRuntime, activity: &Activity) -> Result<String> {
+fn resolve_flow_id(runtime: &TenantRuntime, activity: &Activity) -> Result<(String, String)> {
+    let engine = runtime.engine();
     if let Some(flow_id) = activity.flow_id() {
-        return Ok(flow_id.to_string());
+        if let Some(pack_id) = activity.pack_id() {
+            if engine.flow_by_key(pack_id, flow_id).is_none() {
+                bail!("flow {flow_id} not registered for pack {pack_id}");
+            }
+            return Ok((pack_id.to_string(), flow_id.to_string()));
+        }
+        if let Some(flow) = engine.flow_by_id(flow_id) {
+            return Ok((flow.pack_id.clone(), flow.id.clone()));
+        }
+        bail!("flow {flow_id} is ambiguous; pack_id is required");
     }
 
-    runtime
-        .pack()
+    if let Some(flow_type) = activity.flow_type() {
+        if let Some(pack_id) = activity.pack_id() {
+            if let Some(flow) = engine
+                .flows()
+                .iter()
+                .find(|flow| flow.pack_id == pack_id && flow.flow_type == flow_type)
+            {
+                return Ok((pack_id.to_string(), flow.id.clone()));
+            }
+            bail!("flow type {flow_type} not registered for pack {pack_id}");
+        }
+        if let Some(flow) = engine.flow_by_type(flow_type) {
+            return Ok((flow.pack_id.clone(), flow.id.clone()));
+        }
+        bail!("flow type {flow_type} is ambiguous; pack_id is required");
+    }
+
+    let pack = runtime.pack();
+    let flow_id = pack
         .metadata()
         .entry_flows
         .first()
         .cloned()
-        .ok_or_else(|| anyhow!("no entry flows registered for tenant {}", runtime.tenant()))
+        .ok_or_else(|| anyhow!("no entry flows registered for tenant {}", runtime.tenant()))?;
+    Ok((pack.metadata().pack_id.clone(), flow_id))
 }
 
 fn normalize_replies(result: Value, tenant: &str) -> Vec<Activity> {

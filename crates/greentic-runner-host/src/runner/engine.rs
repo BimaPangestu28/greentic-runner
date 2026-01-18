@@ -23,13 +23,20 @@ use greentic_types::{Flow, Node, NodeId, Routing};
 pub struct FlowEngine {
     packs: Vec<Arc<PackRuntime>>,
     flows: Vec<FlowDescriptor>,
-    flow_sources: HashMap<String, usize>,
-    flow_cache: RwLock<HashMap<String, HostFlow>>,
+    flow_sources: HashMap<FlowKey, usize>,
+    flow_cache: RwLock<HashMap<FlowKey, HostFlow>>,
     default_env: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FlowKey {
+    pack_id: String,
+    flow_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FlowSnapshot {
+    pub pack_id: String,
     pub flow_id: String,
     pub next_node: String,
     pub state: ExecutionState,
@@ -118,33 +125,84 @@ impl FlowExecution {
 }
 
 impl FlowEngine {
-    pub async fn new(packs: Vec<Arc<PackRuntime>>, _config: Arc<HostConfig>) -> Result<Self> {
-        let mut flow_sources = HashMap::new();
+    pub async fn new(packs: Vec<Arc<PackRuntime>>, config: Arc<HostConfig>) -> Result<Self> {
+        let mut flow_sources: HashMap<FlowKey, usize> = HashMap::new();
         let mut descriptors = Vec::new();
+        let mut bindings = HashMap::new();
+        for pack in &config.pack_bindings {
+            bindings.insert(pack.pack_id.clone(), pack.flows.clone());
+        }
+        let enforce_bindings = !bindings.is_empty();
         for (idx, pack) in packs.iter().enumerate() {
+            let pack_id = pack.metadata().pack_id.clone();
+            if enforce_bindings && !bindings.contains_key(&pack_id) {
+                bail!("no gtbind entries found for pack {}", pack_id);
+            }
             let flows = pack.list_flows().await?;
+            let allowed = bindings.get(&pack_id).map(|flows| {
+                flows
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>()
+            });
+            let mut seen = std::collections::HashSet::new();
             for flow in flows {
+                if let Some(ref allow) = allowed
+                    && !allow.contains(&flow.id)
+                {
+                    continue;
+                }
+                seen.insert(flow.id.clone());
                 tracing::info!(
                     flow_id = %flow.id,
                     flow_type = %flow.flow_type,
+                    pack_id = %flow.pack_id,
                     pack_index = idx,
                     "registered flow"
                 );
-                flow_sources.insert(flow.id.clone(), idx);
-                descriptors.retain(|existing: &FlowDescriptor| existing.id != flow.id);
+                flow_sources.insert(
+                    FlowKey {
+                        pack_id: flow.pack_id.clone(),
+                        flow_id: flow.id.clone(),
+                    },
+                    idx,
+                );
+                descriptors.retain(|existing: &FlowDescriptor| {
+                    !(existing.id == flow.id && existing.pack_id == flow.pack_id)
+                });
                 descriptors.push(flow);
+            }
+            if let Some(allow) = allowed {
+                let missing = allow.difference(&seen).cloned().collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    bail!(
+                        "gtbind flow ids missing in pack {}: {}",
+                        pack_id,
+                        missing.join(", ")
+                    );
+                }
             }
         }
 
         let mut flow_map = HashMap::new();
         for flow in &descriptors {
-            if let Some(&pack_idx) = flow_sources.get(&flow.id) {
+            let pack_id = flow.pack_id.clone();
+            if let Some(&pack_idx) = flow_sources.get(&FlowKey {
+                pack_id: pack_id.clone(),
+                flow_id: flow.id.clone(),
+            }) {
                 let pack_clone = Arc::clone(&packs[pack_idx]);
                 let flow_id = flow.id.clone();
                 let task_flow_id = flow_id.clone();
                 match task::spawn_blocking(move || pack_clone.load_flow(&task_flow_id)).await {
-                    Ok(Ok(flow)) => {
-                        flow_map.insert(flow_id, HostFlow::from(flow));
+                    Ok(Ok(loaded_flow)) => {
+                        flow_map.insert(
+                            FlowKey {
+                                pack_id: pack_id.clone(),
+                                flow_id,
+                            },
+                            HostFlow::from(loaded_flow),
+                        );
                     }
                     Ok(Err(err)) => {
                         tracing::warn!(flow_id = %flow.id, error = %err, "failed to load flow metadata");
@@ -165,15 +223,19 @@ impl FlowEngine {
         })
     }
 
-    async fn get_or_load_flow(&self, flow_id: &str) -> Result<HostFlow> {
-        if let Some(flow) = self.flow_cache.read().get(flow_id).cloned() {
+    async fn get_or_load_flow(&self, pack_id: &str, flow_id: &str) -> Result<HostFlow> {
+        let key = FlowKey {
+            pack_id: pack_id.to_string(),
+            flow_id: flow_id.to_string(),
+        };
+        if let Some(flow) = self.flow_cache.read().get(&key).cloned() {
             return Ok(flow);
         }
 
         let pack_idx = *self
             .flow_sources
-            .get(flow_id)
-            .with_context(|| format!("flow {flow_id} not registered"))?;
+            .get(&key)
+            .with_context(|| format!("flow {pack_id}:{flow_id} not registered"))?;
         let pack = Arc::clone(&self.packs[pack_idx]);
         let flow_id_owned = flow_id.to_string();
         let task_flow_id = flow_id_owned.clone();
@@ -181,9 +243,13 @@ impl FlowEngine {
             .await
             .context("failed to join flow metadata task")??;
         let host_flow = HostFlow::from(flow);
-        self.flow_cache
-            .write()
-            .insert(flow_id_owned.clone(), host_flow.clone());
+        self.flow_cache.write().insert(
+            FlowKey {
+                pack_id: pack_id.to_string(),
+                flow_id: flow_id_owned.clone(),
+            },
+            host_flow.clone(),
+        );
         Ok(host_flow)
     }
 
@@ -251,6 +317,13 @@ impl FlowEngine {
         snapshot: FlowSnapshot,
         input: Value,
     ) -> Result<FlowExecution> {
+        if snapshot.pack_id != ctx.pack_id {
+            bail!(
+                "snapshot pack {} does not match requested {}",
+                snapshot.pack_id,
+                ctx.pack_id
+            );
+        }
         if snapshot.flow_id != ctx.flow_id {
             bail!(
                 "snapshot flow {} does not match requested {}",
@@ -258,7 +331,7 @@ impl FlowEngine {
                 ctx.flow_id
             );
         }
-        let flow_ir = self.get_or_load_flow(ctx.flow_id).await?;
+        let flow_ir = self.get_or_load_flow(ctx.pack_id, ctx.flow_id).await?;
         let mut state = snapshot.state;
         state.replace_input(input);
         state.ensure_entry();
@@ -267,7 +340,7 @@ impl FlowEngine {
     }
 
     async fn execute_once(&self, ctx: &FlowContext<'_>, input: Value) -> Result<FlowExecution> {
-        let flow_ir = self.get_or_load_flow(ctx.flow_id).await?;
+        let flow_ir = self.get_or_load_flow(ctx.pack_id, ctx.flow_id).await?;
         let state = ExecutionState::new(input);
         self.drive_flow(ctx, flow_ir, state, None).await
     }
@@ -354,6 +427,7 @@ impl FlowEngine {
                 let mut snapshot_state = state.clone();
                 snapshot_state.clear_egress();
                 let snapshot = FlowSnapshot {
+                    pack_id: ctx.pack_id.to_string(),
                     flow_id: ctx.flow_id.to_string(),
                     next_node: resume_target.as_str().to_string(),
                     state: snapshot_state,
@@ -461,6 +535,7 @@ impl FlowEngine {
         let action = "flow.call";
         let sub_ctx = FlowContext {
             tenant: ctx.tenant,
+            pack_id: ctx.pack_id,
             flow_id: flow_id_owned.as_str(),
             node_id: None,
             tool: ctx.tool,
@@ -568,10 +643,13 @@ impl FlowEngine {
             Some(serde_json::to_string(&call.config)?)
         };
 
-        let pack_idx = *self
-            .flow_sources
-            .get(ctx.flow_id)
-            .with_context(|| format!("flow {} not registered", ctx.flow_id))?;
+        let key = FlowKey {
+            pack_id: ctx.pack_id.to_string(),
+            flow_id: ctx.flow_id.to_string(),
+        };
+        let pack_idx = *self.flow_sources.get(&key).with_context(|| {
+            format!("flow {} (pack {}) not registered", ctx.flow_id, ctx.pack_id)
+        })?;
         let pack = Arc::clone(&self.packs[pack_idx]);
         let exec_ctx = component_exec_ctx(ctx, node_id);
         let value = pack
@@ -649,10 +727,13 @@ impl FlowEngine {
         };
         let input_json = serde_json::to_vec(&input_value)?;
 
-        let pack_idx = *self
-            .flow_sources
-            .get(ctx.flow_id)
-            .with_context(|| format!("flow {} not registered", ctx.flow_id))?;
+        let key = FlowKey {
+            pack_id: ctx.pack_id.to_string(),
+            flow_id: ctx.flow_id.to_string(),
+        };
+        let pack_idx = *self.flow_sources.get(&key).with_context(|| {
+            format!("flow {} (pack {}) not registered", ctx.flow_id, ctx.pack_id)
+        })?;
         let pack = Arc::clone(&self.packs[pack_idx]);
         let binding = pack.resolve_provider(
             payload.provider_id.as_deref(),
@@ -688,16 +769,34 @@ impl FlowEngine {
         &self.flows
     }
 
-    pub fn flow_by_type(&self, flow_type: &str) -> Option<&FlowDescriptor> {
+    pub fn flow_by_key(&self, pack_id: &str, flow_id: &str) -> Option<&FlowDescriptor> {
         self.flows
             .iter()
-            .find(|descriptor| descriptor.flow_type == flow_type)
+            .find(|descriptor| descriptor.pack_id == pack_id && descriptor.id == flow_id)
+    }
+
+    pub fn flow_by_type(&self, flow_type: &str) -> Option<&FlowDescriptor> {
+        let mut matches = self
+            .flows
+            .iter()
+            .filter(|descriptor| descriptor.flow_type == flow_type);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(first)
     }
 
     pub fn flow_by_id(&self, flow_id: &str) -> Option<&FlowDescriptor> {
-        self.flows
+        let mut matches = self
+            .flows
             .iter()
-            .find(|descriptor| descriptor.id == flow_id)
+            .filter(|descriptor| descriptor.id == flow_id);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(first)
     }
 }
 
@@ -1171,6 +1270,7 @@ mod tests {
         };
         let ctx = FlowContext {
             tenant: "tenant",
+            pack_id: "test-pack",
             flow_id: "flow",
             node_id: Some("missing-op"),
             tool: None,
@@ -1227,6 +1327,7 @@ mod tests {
         };
         let ctx = FlowContext {
             tenant: "tenant",
+            pack_id: "test-pack",
             flow_id: "flow",
             node_id: Some("missing-op-hint"),
             tool: None,
@@ -1337,12 +1438,19 @@ mod tests {
             packs: Vec::new(),
             flows: Vec::new(),
             flow_sources: HashMap::new(),
-            flow_cache: RwLock::new(HashMap::from([("emit.flow".to_string(), host_flow)])),
+            flow_cache: RwLock::new(HashMap::from([(
+                FlowKey {
+                    pack_id: "test-pack".to_string(),
+                    flow_id: "emit.flow".to_string(),
+                },
+                host_flow,
+            )])),
             default_env: "local".to_string(),
         };
         let observer = CountingObserver::new();
         let ctx = FlowContext {
             tenant: "demo",
+            pack_id: "test-pack",
             flow_id: "emit.flow",
             node_id: None,
             tool: None,
@@ -1373,6 +1481,7 @@ use tracing::Instrument;
 
 pub struct FlowContext<'a> {
     pub tenant: &'a str,
+    pub pack_id: &'a str,
     pub flow_id: &'a str,
     pub node_id: Option<&'a str>,
     pub tool: Option<&'a str>,

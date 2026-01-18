@@ -29,7 +29,7 @@ fn instantiate_component(wasm: &Path, config: Arc<HostConfig>) -> Result<()> {
         None,
         None,
         None,
-        default_manager(),
+        default_manager()?,
         config.oauth_broker_config(),
         None,
     )?;

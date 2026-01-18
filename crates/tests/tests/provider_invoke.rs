@@ -57,7 +57,7 @@ async fn provider_invoke_echoes_payload() -> Result<()> {
             None::<DynSessionStore>,
             Some(new_state_store()),
             Arc::clone(&WASI_POLICY),
-            default_manager(),
+            default_manager()?,
             None,
             false,
             ComponentResolution::default(),
@@ -68,6 +68,7 @@ async fn provider_invoke_echoes_payload() -> Result<()> {
     let retry_config = config.retry_config().into();
     let ctx = FlowContext {
         tenant: config.tenant.as_str(),
+        pack_id: pack.metadata().pack_id.as_str(),
         flow_id: "provider.echo",
         node_id: None,
         tool: None,
@@ -133,7 +134,7 @@ async fn provider_invoke_supports_messaging_secrets_events() -> Result<()> {
             None::<DynSessionStore>,
             Some(new_state_store()),
             Arc::clone(&WASI_POLICY),
-            default_manager(),
+            default_manager()?,
             None,
             false,
             ComponentResolution::default(),
@@ -167,6 +168,7 @@ async fn provider_invoke_supports_messaging_secrets_events() -> Result<()> {
     for (flow_id, input, expected, action) in cases {
         let ctx = FlowContext {
             tenant: config.tenant.as_str(),
+            pack_id: pack.metadata().pack_id.as_str(),
             flow_id,
             node_id: None,
             tool: None,
@@ -219,7 +221,7 @@ async fn component_exec_carries_operation_from_flow() -> Result<()> {
             None::<DynSessionStore>,
             None,
             Arc::clone(&WASI_POLICY),
-            default_manager(),
+            default_manager()?,
             None,
             false,
             ComponentResolution::default(),
@@ -235,7 +237,7 @@ async fn component_exec_carries_operation_from_flow() -> Result<()> {
             None::<DynSessionStore>,
             None,
             Arc::clone(&WASI_POLICY),
-            default_manager(),
+            default_manager()?,
             None,
             false,
             ComponentResolution::default(),
@@ -246,6 +248,7 @@ async fn component_exec_carries_operation_from_flow() -> Result<()> {
     let retry_config = config.retry_config().into();
     let ctx = FlowContext {
         tenant: config.tenant.as_str(),
+        pack_id: pack_b.metadata().pack_id.as_str(),
         flow_id: flow_b.id.as_str(),
         node_id: None,
         tool: None,

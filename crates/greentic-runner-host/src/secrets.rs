@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use greentic_secrets_lib::SecretsManager;
 use greentic_secrets_lib::env::EnvSecretsManager;
+use greentic_secrets_lib::{SecretScope, SecretsManager};
+use greentic_types::TenantCtx;
 use tokio::runtime::{Handle, Runtime};
 
 /// Shared secrets manager handle used by the host.
@@ -36,25 +37,70 @@ impl SecretsBackend {
 
     pub fn build_manager(&self) -> Result<DynSecretsManager> {
         match self {
-            SecretsBackend::Env => Ok(Arc::new(EnvSecretsManager) as DynSecretsManager),
+            SecretsBackend::Env => {
+                ensure_env_secrets_allowed()?;
+                Ok(Arc::new(EnvSecretsManager) as DynSecretsManager)
+            }
         }
     }
 }
 
-pub fn default_manager() -> DynSecretsManager {
-    Arc::new(EnvSecretsManager) as DynSecretsManager
+pub fn default_manager() -> Result<DynSecretsManager> {
+    SecretsBackend::Env.build_manager()
 }
 
-pub fn read_secret_blocking(manager: &DynSecretsManager, key: &str) -> Result<Vec<u8>> {
+pub fn scoped_secret_path(ctx: &TenantCtx, key: &str) -> Result<String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(anyhow!("secret key must not be empty"));
+    }
+    let safe_key = key.replace('/', ".").replace(' ', "_");
+    let user = ctx.user_id.as_ref().or(ctx.user.as_ref());
+    let name = if let Some(user_id) = user {
+        format!("user.{}.{}", user_id.as_str(), safe_key)
+    } else {
+        safe_key
+    };
+    let team = ctx.team_id.as_ref().or(ctx.team.as_ref());
+    let scope = SecretScope {
+        env: ctx.env.as_str().to_string(),
+        tenant: ctx.tenant.as_str().to_string(),
+        team: team.map(|value| value.as_str().to_string()),
+    };
+    let team_segment = scope.team.as_deref().unwrap_or("_");
+    Ok(format!(
+        "secrets://{}/{}/{}/kv/{}",
+        scope.env, scope.tenant, team_segment, name
+    ))
+}
+
+pub fn read_secret_blocking(
+    manager: &DynSecretsManager,
+    ctx: &TenantCtx,
+    key: &str,
+) -> Result<Vec<u8>> {
+    let scoped_key = scoped_secret_path(ctx, key)?;
     let bytes = if let Ok(handle) = Handle::try_current() {
         handle
-            .block_on(manager.read(key))
+            .block_on(manager.read(scoped_key.as_str()))
             .map_err(|err| anyhow!(err.to_string()))?
     } else {
         Runtime::new()
             .context("failed to initialise secrets runtime")?
-            .block_on(manager.read(key))
+            .block_on(manager.read(scoped_key.as_str()))
             .map_err(|err| anyhow!(err.to_string()))?
     };
     Ok(bytes)
+}
+
+fn ensure_env_secrets_allowed() -> Result<()> {
+    let env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
+    let env = env.trim().to_ascii_lowercase();
+    if matches!(env.as_str(), "local" | "dev" | "test") {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "env secrets backend is disabled for env '{env}' (dev/test only)"
+        ))
+    }
 }

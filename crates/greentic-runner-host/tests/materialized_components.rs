@@ -44,6 +44,8 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         timers: Vec::new(),
         oauth: None,
         mocks: None,
+        pack_bindings: Vec::new(),
+        env_passthrough: Vec::new(),
     }
 }
 
@@ -395,7 +397,7 @@ fn prefers_materialized_components_over_archive() -> Result<()> {
         None,
         None,
         Arc::new(RunnerWasiPolicy::new()),
-        default_manager(),
+        default_manager()?,
         None,
         false,
         ComponentResolution {
@@ -438,7 +440,7 @@ fn falls_back_to_archive_when_materialized_missing_components() -> Result<()> {
         None,
         None,
         Arc::new(RunnerWasiPolicy::new()),
-        default_manager(),
+        default_manager()?,
         None,
         false,
         ComponentResolution {
@@ -483,7 +485,7 @@ fn errors_when_components_missing_from_all_sources() -> Result<()> {
             None,
             None,
             Arc::new(RunnerWasiPolicy::new()),
-            default_manager(),
+            default_manager()?,
             None,
             false,
             ComponentResolution {

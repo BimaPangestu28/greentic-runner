@@ -130,6 +130,8 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         timers: Vec::new(),
         oauth: None,
         mocks: None,
+        pack_bindings: Vec::new(),
+        env_passthrough: Vec::new(),
     }
 }
 
@@ -341,8 +343,13 @@ fn component_exec_invokes_pack_component() -> Result<()> {
 
     let config = Arc::new(host_config(&bindings_path));
     let runtime = Arc::new(
-        PackRuntime::for_component_test(components, flows.clone(), Arc::clone(&config))
-            .context("pack init")?,
+        PackRuntime::for_component_test(
+            components,
+            flows.clone(),
+            "test-pack",
+            Arc::clone(&config),
+        )
+        .context("pack init")?,
     );
     // Ensure the runtime constructed successfully with components and flows in place.
     let _ = (runtime, config, flows);
@@ -384,7 +391,7 @@ nodes:
         None,
         None,
         Arc::new(greentic_runner_host::wasi::RunnerWasiPolicy::new()),
-        greentic_runner_host::secrets::default_manager(),
+        greentic_runner_host::secrets::default_manager()?,
         None,
         false,
         ComponentResolution::default(),
@@ -399,6 +406,7 @@ nodes:
     let flow_id = "exec.flow".to_string();
     let ctx = FlowContext {
         tenant: tenant.as_str(),
+        pack_id: pack.metadata().pack_id.as_str(),
         flow_id: flow_id.as_str(),
         node_id: None,
         tool: None,
@@ -467,7 +475,7 @@ nodes:
         None,
         None,
         Arc::new(greentic_runner_host::wasi::RunnerWasiPolicy::new()),
-        greentic_runner_host::secrets::default_manager(),
+        greentic_runner_host::secrets::default_manager()?,
         None,
         false,
         ComponentResolution::default(),
@@ -482,6 +490,7 @@ nodes:
     let flow_id = "emit.flow".to_string();
     let ctx = FlowContext {
         tenant: tenant.as_str(),
+        pack_id: pack.metadata().pack_id.as_str(),
         flow_id: flow_id.as_str(),
         node_id: None,
         tool: None,
@@ -545,7 +554,7 @@ fn runtime_extension_flow_overrides_manifest_flow() -> Result<()> {
         None,
         None,
         Arc::new(greentic_runner_host::wasi::RunnerWasiPolicy::new()),
-        greentic_runner_host::secrets::default_manager(),
+        greentic_runner_host::secrets::default_manager()?,
         None,
         false,
         ComponentResolution::default(),
@@ -558,6 +567,7 @@ fn runtime_extension_flow_overrides_manifest_flow() -> Result<()> {
     let retry_config = config.retry.clone().into();
     let ctx = FlowContext {
         tenant: config.tenant.as_str(),
+        pack_id: pack.metadata().pack_id.as_str(),
         flow_id: "exec.flow",
         node_id: None,
         tool: None,

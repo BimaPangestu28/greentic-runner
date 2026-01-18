@@ -18,7 +18,10 @@ impl InMemoryStateHost {
     }
 
     fn key_of(session_key: &SessionKey) -> String {
-        format!("{}:{}", session_key.tenant_key, session_key.flow_id)
+        format!(
+            "{}:{}:{}",
+            session_key.tenant_key, session_key.pack_id, session_key.flow_id
+        )
     }
 }
 

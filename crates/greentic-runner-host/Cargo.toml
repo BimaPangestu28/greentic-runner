@@ -14,6 +14,7 @@ categories = ["asynchronous", "api-bindings", "command-line-utilities"]
 default = ["verify"]
 telemetry = ["dep:greentic-telemetry"]
 verify = []
+session-redis = ["greentic-session/redis"]
 
 [dependencies]
 async-trait.workspace = true

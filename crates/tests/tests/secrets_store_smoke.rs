@@ -57,7 +57,7 @@ fn invoke_component(wasm: &Path, config: Arc<HostConfig>) -> Result<String> {
         None,
         None,
         None,
-        default_manager(),
+        default_manager()?,
         None,
         None,
     )?;

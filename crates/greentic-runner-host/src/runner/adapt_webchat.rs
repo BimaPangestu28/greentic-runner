@@ -71,6 +71,7 @@ pub async fn activities(
     let envelope = IngressEnvelope {
         tenant,
         env: None,
+        pack_id: Some(flow.pack_id.clone()),
         flow_id: flow.id.clone(),
         flow_type: Some(flow.flow_type.clone()),
         action: Some("messaging".into()),
@@ -89,6 +90,7 @@ pub async fn activities(
         timestamp: Some(timestamp.to_rfc3339()),
         payload: canonical_payload,
         metadata: None,
+        reply_scope: None,
     }
     .canonicalize();
 

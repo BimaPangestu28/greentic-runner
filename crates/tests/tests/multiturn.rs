@@ -47,6 +47,7 @@ async fn multi_turn_flow_pauses_and_resumes() -> Result<()> {
     let first = runner
         .run_flow(RunFlowRequest {
             tenant: tenant_ctx.clone(),
+            pack_id: "test-pack".into(),
             flow_id: "support.flow".into(),
             input: serde_json::to_value(&envelope)?,
             session_hint: envelope.session_hint.clone(),
@@ -63,6 +64,7 @@ async fn multi_turn_flow_pauses_and_resumes() -> Result<()> {
     let second = runner
         .run_flow(RunFlowRequest {
             tenant: tenant_ctx,
+            pack_id: "test-pack".into(),
             flow_id: "support.flow".into(),
             input: serde_json::to_value(&envelope)?,
             session_hint: envelope.session_hint.clone(),
@@ -86,6 +88,7 @@ fn ingress_with_text(text: &str, session_hint: Option<String>) -> IngressEnvelop
     IngressEnvelope {
         tenant: "acme".into(),
         env: Some("local".into()),
+        pack_id: Some("test-pack".into()),
         flow_id: "support.flow".into(),
         flow_type: Some("messaging".into()),
         action: Some("messaging".into()),
@@ -98,6 +101,7 @@ fn ingress_with_text(text: &str, session_hint: Option<String>) -> IngressEnvelop
         timestamp: None,
         payload: json!({ "text": text }),
         metadata: None,
+        reply_scope: None,
     }
     .canonicalize()
 }
@@ -105,6 +109,7 @@ fn ingress_with_text(text: &str, session_hint: Option<String>) -> IngressEnvelop
 fn test_flow() -> FlowDefinition {
     FlowDefinition::new(
         FlowSummary {
+            pack_id: "test-pack".into(),
             id: "support.flow".into(),
             name: "Support".into(),
             version: "1.0.0".into(),

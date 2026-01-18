@@ -9,6 +9,8 @@ pub struct Activity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tenant: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pack_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     flow_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     flow_type: Option<String>,
@@ -46,6 +48,7 @@ impl Activity {
         Self {
             kind: ActivityKind::Message,
             tenant: None,
+            pack_id: None,
             flow_id: None,
             flow_type: Some("messaging".into()),
             session_id: None,
@@ -65,6 +68,7 @@ impl Activity {
                 flow_type: None,
             },
             tenant: None,
+            pack_id: None,
             flow_id: None,
             flow_type: None,
             session_id: None,
@@ -85,6 +89,12 @@ impl Activity {
     /// Target a specific flow identifier.
     pub fn with_flow(mut self, flow_id: impl Into<String>) -> Self {
         self.flow_id = Some(flow_id.into());
+        self
+    }
+
+    /// Target a specific pack identifier.
+    pub fn with_pack(mut self, pack_id: impl Into<String>) -> Self {
+        self.pack_id = Some(pack_id.into());
         self
     }
 
@@ -134,6 +144,11 @@ impl Activity {
     /// Return the resolved tenant identifier, if any.
     pub fn tenant(&self) -> Option<&str> {
         self.tenant.as_deref()
+    }
+
+    /// Return the resolved pack identifier, if any.
+    pub fn pack_id(&self) -> Option<&str> {
+        self.pack_id.as_deref()
     }
 
     /// Return the resolved flow identifier hint.

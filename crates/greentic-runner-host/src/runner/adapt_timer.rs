@@ -39,6 +39,17 @@ pub fn spawn_timers(runtime: Arc<TenantRuntime>) -> Result<Vec<JoinHandle<()>>> 
                 } else {
                     continue;
                 }
+                let pack_id = match runtime_clone.engine().flow_by_id(&flow_id) {
+                    Some(flow) => flow.pack_id.clone(),
+                    None => {
+                        tracing::error!(
+                            flow_id = %flow_id,
+                            schedule_id = %schedule_id,
+                            "timer flow is ambiguous; pack_id is required"
+                        );
+                        continue;
+                    }
+                };
                 let payload = json!({
                     "now": next.to_rfc3339(),
                     "schedule_id": schedule_id.clone(),
@@ -52,6 +63,7 @@ pub fn spawn_timers(runtime: Arc<TenantRuntime>) -> Result<Vec<JoinHandle<()>>> 
                 let envelope = IngressEnvelope {
                     tenant: tenant.clone(),
                     env: None,
+                    pack_id: Some(pack_id),
                     flow_id: flow_id.clone(),
                     flow_type: Some("timer".into()),
                     action: Some("timer".into()),
@@ -64,6 +76,7 @@ pub fn spawn_timers(runtime: Arc<TenantRuntime>) -> Result<Vec<JoinHandle<()>>> 
                     timestamp: Some(next.to_rfc3339()),
                     payload,
                     metadata: None,
+                    reply_scope: None,
                 }
                 .canonicalize();
                 match runtime_clone.state_machine().handle(envelope).await {

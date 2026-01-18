@@ -173,16 +173,16 @@ Versions are tracked per crate. Tagging `master` with `<crate>-vX.Y.Z` triggers 
 
 ## Bindings inference
 
-`greentic-gen-bindings` can inspect a pack directory and emit a complete `bindings.yaml` seed using the same schema the host expects:
+`greentic-gen-bindings` can inspect a `.gtpack` and emit a complete `bindings.yaml` seed using the same schema the host expects:
 
 ```bash
 cargo run -p greentic-runner --bin greentic-gen-bindings \
-  --pack examples/weather-demo \
-  --out generated/bindings.complete.yaml \
+  examples/packs/demo.gtpack \
+  --out generated/demo.gtbind \
   --complete
 ```
 
-`--complete` fills safe defaults for env passthrough, network allowlists, secrets, and MCP server stubs; `--strict` additionally fails if HTTP/secrets/MCP requirements cannot be satisfied so pack authors can share hints via `bindings.hints.yaml` or `meta.bindings` annotations. The CLI also understands `--component` so future packs compiled to a Wasm component can be inspected for host imports before generating bindings.
+`--complete` fills safe defaults for env passthrough, network allowlists, secrets, and MCP server stubs; `--strict` additionally fails if HTTP/secrets/MCP requirements cannot be satisfied so pack authors can share hints via `bindings.hints.yaml` or `meta.bindings` annotations. Use `--pack-dir` for unpacked pack directories; `--component` inspects a compiled component.
 
 ## Repo settings
 

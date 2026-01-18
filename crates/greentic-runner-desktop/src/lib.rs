@@ -307,7 +307,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
 
     let session_store = new_session_store();
     let state_store = new_state_store();
-    let secrets_manager = default_manager();
+    let secrets_manager = default_manager().context("failed to initialise secrets backend")?;
     let pack = Arc::new(
         PackRuntime::load(
             &pack_path,
@@ -346,6 +346,7 @@ async fn run_pack_async(pack_path: &Path, opts: RunOptions) -> Result<RunResult>
     let mock_ref: &MockLayer = &mock_layer;
     let ctx = FlowContext {
         tenant: &tenant_str,
+        pack_id: pack.metadata().pack_id.as_str(),
         flow_id: &entry_flow_id,
         node_id: None,
         tool: None,
@@ -514,6 +515,8 @@ fn build_host_config(profile: &ResolvedProfile, dirs: &RunDirectories) -> HostCo
         timers: Vec::new(),
         oauth: None,
         mocks: None,
+        pack_bindings: Vec::new(),
+        env_passthrough: Vec::new(),
     }
 }
 

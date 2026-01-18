@@ -19,6 +19,21 @@ use std::time::SystemTime;
 const PROVIDER_ID: &str = "greentic-runner";
 pub const PAYLOAD_FROM_LAST_INPUT: &str = "$ingress";
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FlowKey {
+    pack_id: String,
+    flow_id: String,
+}
+
+impl FlowKey {
+    fn new(pack_id: &str, flow_id: &str) -> Self {
+        Self {
+            pack_id: pack_id.to_string(),
+            flow_id: flow_id.to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FlowDefinition {
     pub summary: FlowSummary,
@@ -47,7 +62,7 @@ pub struct StateMachine {
     host: Arc<HostBundle>,
     adapters: AdapterRegistry,
     policy: Policy,
-    flows: Arc<RwLock<HashMap<String, FlowDefinition>>>,
+    flows: Arc<RwLock<HashMap<FlowKey, FlowDefinition>>>,
 }
 
 impl StateMachine {
@@ -62,7 +77,10 @@ impl StateMachine {
 
     pub fn register_flow(&self, definition: FlowDefinition) {
         let mut guard = self.flows.write();
-        guard.insert(definition.summary.id.clone(), definition);
+        guard.insert(
+            FlowKey::new(&definition.summary.pack_id, &definition.summary.id),
+            definition,
+        );
     }
 
     pub fn list_flows(&self) -> Vec<FlowSummary> {
@@ -70,11 +88,12 @@ impl StateMachine {
         guard.values().map(|flow| flow.summary.clone()).collect()
     }
 
-    pub fn get_flow_schema(&self, flow_id: &str) -> GResult<FlowSchema> {
+    pub fn get_flow_schema(&self, pack_id: &str, flow_id: &str) -> GResult<FlowSchema> {
         let guard = self.flows.read();
         guard
-            .get(flow_id)
+            .get(&FlowKey::new(pack_id, flow_id))
             .map(|flow| FlowSchema {
+                pack_id: pack_id.to_string(),
                 id: flow_id.to_string(),
                 schema_json: flow.schema.clone(),
             })
@@ -86,6 +105,7 @@ impl StateMachine {
     pub async fn step(
         &self,
         tenant: &TenantCtx,
+        pack_id: &str,
         flow_id: &str,
         session_hint: Option<String>,
         input: Value,
@@ -102,7 +122,7 @@ impl StateMachine {
         let flow = {
             let guard = self.flows.read();
             guard
-                .get(flow_id)
+                .get(&FlowKey::new(pack_id, flow_id))
                 .cloned()
                 .ok_or_else(|| RunnerError::FlowNotFound {
                     flow_id: flow_id.to_string(),
@@ -111,7 +131,7 @@ impl StateMachine {
 
         self.ensure_policy_budget(&flow)?;
 
-        let key = SessionKey::new(tenant, flow_id, session_hint.clone());
+        let key = SessionKey::new(tenant, pack_id, flow_id, session_hint.clone());
         let session_host = &self.host.session;
         let mut session = match session_host.get(&key).await? {
             Some(snapshot) => snapshot,
@@ -434,6 +454,7 @@ mod tests {
         let first = sm
             .step(
                 &tenant_ctx,
+                "test-pack",
                 "support.flow",
                 session_hint.clone(),
                 json!({ "text": "hi" }),
@@ -446,7 +467,12 @@ mod tests {
             json!("Welcome to support!")
         );
 
-        let key = SessionKey::new(&tenant_ctx, "support.flow", session_hint.clone());
+        let key = SessionKey::new(
+            &tenant_ctx,
+            "test-pack",
+            "support.flow",
+            session_hint.clone(),
+        );
         let snapshot = session_store.get(&key).await.unwrap().unwrap();
         assert!(snapshot.waiting.is_some());
         assert_eq!(snapshot.cursor.position, 1);
@@ -454,6 +480,7 @@ mod tests {
         let second = sm
             .step(
                 &tenant_ctx,
+                "test-pack",
                 "support.flow",
                 session_hint.clone(),
                 json!({ "text": "need help" }),
@@ -478,6 +505,7 @@ mod tests {
     fn test_flow() -> FlowDefinition {
         FlowDefinition::new(
             FlowSummary {
+                pack_id: "test-pack".into(),
                 id: "support.flow".into(),
                 name: "Support".into(),
                 version: "1.0.0".into(),

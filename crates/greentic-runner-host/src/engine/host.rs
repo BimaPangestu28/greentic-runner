@@ -27,15 +27,22 @@ pub trait TelemetryHost: Send + Sync {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct SessionKey {
     pub tenant_key: String,
+    pub pack_id: String,
     pub flow_id: String,
     pub session_hint: Option<String>,
 }
 
 impl SessionKey {
-    pub fn new(tenant: &TenantCtx, flow_id: &str, session_hint: Option<String>) -> Self {
+    pub fn new(
+        tenant: &TenantCtx,
+        pack_id: &str,
+        flow_id: &str,
+        session_hint: Option<String>,
+    ) -> Self {
         let tenant_key = format!("{}::{}", tenant.env.as_str(), tenant.tenant.as_str());
         Self {
             tenant_key,
+            pack_id: pack_id.to_string(),
             flow_id: flow_id.to_string(),
             session_hint,
         }

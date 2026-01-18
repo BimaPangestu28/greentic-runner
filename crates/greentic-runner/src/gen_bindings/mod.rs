@@ -9,9 +9,11 @@ use std::{
 use url::Url;
 
 use self::component::ComponentFeatures;
+use greentic_types::cbor::decode_pack_manifest;
 use runner_core::normalize_under_root;
 
 pub mod component;
+pub mod input;
 
 fn yaml_string(value: impl Into<String>) -> Value {
     Value::String(value.into(), None)
@@ -137,24 +139,75 @@ pub fn load_pack(pack_dir: &Path) -> Result<PackMetadata> {
     Ok(PackMetadata { name, flows, hints })
 }
 
+pub fn load_pack_root(pack_root: &Path) -> Result<PackMetadata> {
+    let manifest = pack_root.join("pack.yaml");
+    if manifest.is_file() {
+        return load_pack(pack_root);
+    }
+    let cbor_path = pack_root.join("manifest.cbor");
+    if cbor_path.is_file() {
+        return load_pack_manifest_cbor(pack_root, &cbor_path);
+    }
+    bail!(
+        "pack directory {} does not include pack.yaml or manifest.cbor",
+        pack_root.display()
+    );
+}
+
 fn load_flow(path: &Path) -> Result<FlowMetadata> {
     let content = fs::read_to_string(path)?;
-    let parsed: Value = serde_yaml::from_str(&content)
-        .with_context(|| format!("failed to parse flow {}", path.display()))?;
+    let fallback = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("<unknown>");
+    load_flow_content(&content, fallback, &path.display().to_string())
+}
+
+fn load_flow_content(content: &str, fallback_name: &str, label: &str) -> Result<FlowMetadata> {
+    let parsed: Value =
+        serde_yaml::from_str(content).with_context(|| format!("failed to parse flow {}", label))?;
     let name = parsed
         .get("name")
         .and_then(Value::as_str)
         .map(|s| s.to_string())
-        .or_else(|| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "<unknown>".to_string());
+        .unwrap_or_else(|| fallback_name.to_string());
     Ok(FlowMetadata {
         name,
         document: parsed,
     })
+}
+
+fn load_pack_manifest_cbor(pack_root: &Path, cbor_path: &Path) -> Result<PackMetadata> {
+    let bytes =
+        fs::read(cbor_path).with_context(|| format!("failed to read {}", cbor_path.display()))?;
+    let manifest = decode_pack_manifest(&bytes)
+        .with_context(|| format!("failed to decode {}", cbor_path.display()))?;
+    let flows = manifest
+        .flows
+        .iter()
+        .map(|entry| {
+            let serialized = serde_yaml::to_string(&entry.flow)
+                .context("failed to serialize flow from manifest")?;
+            let parsed: Value =
+                serde_yaml::from_str(&serialized).context("failed to parse flow from manifest")?;
+            Ok(FlowMetadata {
+                name: entry.id.to_string(),
+                document: parsed,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let hints_path = pack_root.join("bindings.hints.yaml");
+    let hints = if hints_path.exists() {
+        serde_yaml::from_reader(fs::File::open(&hints_path)?)
+            .with_context(|| format!("failed to read hints {}", hints_path.display()))?
+    } else {
+        BindingsHints::default()
+    };
+
+    let name = manifest.pack_id.to_string();
+
+    Ok(PackMetadata { name, flows, hints })
 }
 
 #[derive(Debug, Deserialize)]

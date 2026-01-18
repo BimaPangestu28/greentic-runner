@@ -82,9 +82,10 @@ impl RunnerApi for Runner {
     async fn get_flow_schema(
         &self,
         _tenant: &TenantCtx,
+        pack_id: &str,
         flow_id: &str,
     ) -> GResult<super::api::FlowSchema> {
-        self.sm.get_flow_schema(flow_id)
+        self.sm.get_flow_schema(pack_id, flow_id)
     }
 
     async fn run_flow(&self, req: RunFlowRequest) -> GResult<RunFlowResult> {
@@ -92,6 +93,7 @@ impl RunnerApi for Runner {
             .sm
             .step(
                 &req.tenant,
+                &req.pack_id,
                 &req.flow_id,
                 req.session_hint.clone(),
                 req.input.clone(),

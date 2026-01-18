@@ -6,6 +6,7 @@
 //! `greentic-runner` CLI. Downstream crates embed it either through
 //! [`RunnerConfig`] + [`run`] (HTTP host) or [`HostBuilder`] (direct API access).
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,6 +30,7 @@ pub mod cache;
 pub mod component_api;
 pub mod config;
 pub mod engine;
+pub mod gtbind;
 pub mod http;
 pub mod ingress;
 pub mod pack;
@@ -52,6 +54,7 @@ pub mod oauth;
 
 pub use activity::{Activity, ActivityKind};
 pub use config::HostConfig;
+pub use gtbind::{PackBinding, TenantBindings};
 pub use host::TelemetryCfg;
 pub use host::{HostBuilder, RunnerHost, TenantHandle};
 pub use wasi::{PreopenSpec, RunnerWasiPolicy};
@@ -66,7 +69,7 @@ pub use runner::HostServer;
 /// User-facing configuration for running the unified host.
 #[derive(Clone)]
 pub struct RunnerConfig {
-    pub bindings: Vec<PathBuf>,
+    pub tenant_bindings: HashMap<String, TenantBindings>,
     pub pack: PackConfig,
     pub port: u16,
     pub refresh_interval: Duration,
@@ -82,7 +85,11 @@ impl RunnerConfig {
     /// Build a [`RunnerConfig`] from a resolved greentic-config and the provided binding files.
     pub fn from_config(resolved_config: ResolvedConfig, bindings: Vec<PathBuf>) -> Result<Self> {
         if bindings.is_empty() {
-            anyhow::bail!("at least one bindings file is required");
+            anyhow::bail!("at least one gtbind file is required");
+        }
+        let tenant_bindings = gtbind::load_gtbinds(&bindings)?;
+        if tenant_bindings.is_empty() {
+            anyhow::bail!("no gtbind files loaded");
         }
         let pack = pack_config_from(
             &resolved_config.config.packs,
@@ -103,7 +110,14 @@ impl RunnerConfig {
         let routing = RoutingConfig::from_env_with_default(default_tenant);
         let paths = &resolved_config.config.paths;
         ensure_paths_exist(paths)?;
-        let wasi_policy = default_wasi_policy(paths);
+        let mut wasi_policy = default_wasi_policy(paths);
+        let mut env_allow = HashSet::new();
+        for binding in tenant_bindings.values() {
+            env_allow.extend(binding.env_passthrough.iter().cloned());
+        }
+        for key in env_allow {
+            wasi_policy = wasi_policy.allow_env(key);
+        }
 
         let admin = AdminAuth::new(resolved_config.config.services.as_ref().and_then(|s| {
             s.events
@@ -113,7 +127,7 @@ impl RunnerConfig {
         }));
         let secrets_backend = SecretsBackend::from_config(&resolved_config.config.secrets)?;
         Ok(Self {
-            bindings,
+            tenant_bindings,
             pack,
             port,
             refresh_interval: refresh,
@@ -233,7 +247,7 @@ fn telemetry_from(_cfg: &TelemetryConfig) -> Option<TelemetryCfg> {
 /// Run the unified Greentic runner host until shutdown.
 pub async fn run(cfg: RunnerConfig) -> Result<()> {
     let RunnerConfig {
-        bindings,
+        tenant_bindings,
         pack,
         port,
         refresh_interval,
@@ -248,9 +262,8 @@ pub async fn run(cfg: RunnerConfig) -> Result<()> {
     let _ = telemetry;
 
     let mut builder = HostBuilder::new();
-    for path in &bindings {
-        let host_config = HostConfig::load_from_path(path)
-            .with_context(|| format!("failed to load host bindings {}", path.display()))?;
+    for bindings in tenant_bindings.into_values() {
+        let host_config = HostConfig::from_gtbind(bindings);
         builder = builder.with_config(host_config);
     }
     #[cfg(feature = "telemetry")]

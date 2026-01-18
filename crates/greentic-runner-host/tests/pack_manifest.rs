@@ -49,6 +49,8 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         timers: Vec::new(),
         oauth: None,
         mocks: None,
+        pack_bindings: Vec::new(),
+        env_passthrough: Vec::new(),
     }
 }
 
@@ -486,7 +488,7 @@ fn gtpack_manifest_fast_path_invokes_components() -> Result<()> {
         None,
         None,
         Arc::new(RunnerWasiPolicy::new()),
-        greentic_runner_host::secrets::default_manager(),
+        greentic_runner_host::secrets::default_manager()?,
         None,
         false,
         ComponentResolution::default(),
@@ -581,7 +583,7 @@ fn gtpack_manifest_loads_remote_components_from_cache() -> Result<()> {
         None,
         None,
         Arc::new(RunnerWasiPolicy::new()),
-        greentic_runner_host::secrets::default_manager(),
+        greentic_runner_host::secrets::default_manager()?,
         None,
         false,
         ComponentResolution {
@@ -645,7 +647,7 @@ fn gtpack_manifest_offline_errors_when_remote_component_missing() -> Result<()> 
             None,
             None,
             Arc::new(RunnerWasiPolicy::new()),
-            greentic_runner_host::secrets::default_manager(),
+            greentic_runner_host::secrets::default_manager()?,
             None,
             false,
             ComponentResolution {
@@ -708,7 +710,7 @@ fn gtpack_manifest_component_sources_only_loads_components() -> Result<()> {
         None,
         None,
         Arc::new(RunnerWasiPolicy::new()),
-        greentic_runner_host::secrets::default_manager(),
+        greentic_runner_host::secrets::default_manager()?,
         None,
         false,
         ComponentResolution::default(),
@@ -745,7 +747,7 @@ fn state_store_roundtrip_requires_capability() -> Result<()> {
         None,
         Some(new_state_store()),
         Arc::new(RunnerWasiPolicy::new()),
-        greentic_runner_host::secrets::default_manager(),
+        greentic_runner_host::secrets::default_manager()?,
         None,
         false,
         ComponentResolution::default(),
@@ -796,7 +798,7 @@ fn state_store_is_gated_without_capability() -> Result<()> {
         None,
         Some(new_state_store()),
         Arc::new(RunnerWasiPolicy::new()),
-        greentic_runner_host::secrets::default_manager(),
+        greentic_runner_host::secrets::default_manager()?,
         None,
         false,
         ComponentResolution::default(),

@@ -67,6 +67,7 @@ pub async fn events(
     let envelope = IngressEnvelope {
         tenant,
         env: None,
+        pack_id: Some(flow.pack_id.clone()),
         flow_id: flow.id.clone(),
         flow_type: Some(flow.flow_type.clone()),
         action: Some("messaging".into()),
@@ -87,6 +88,7 @@ pub async fn events(
         timestamp: Some(mapped.timestamp.to_rfc3339()),
         payload: mapped.payload,
         metadata: None,
+        reply_scope: None,
     }
     .canonicalize();
 
@@ -149,6 +151,7 @@ pub async fn interactive(
     let envelope = IngressEnvelope {
         tenant,
         env: None,
+        pack_id: Some(flow.pack_id.clone()),
         flow_id: flow.id.clone(),
         flow_type: Some(flow.flow_type.clone()),
         action: Some("messaging".into()),
@@ -161,6 +164,7 @@ pub async fn interactive(
         timestamp: Some(mapped.timestamp.to_rfc3339()),
         payload: mapped.payload,
         metadata: None,
+        reply_scope: None,
     }
     .canonicalize();
 

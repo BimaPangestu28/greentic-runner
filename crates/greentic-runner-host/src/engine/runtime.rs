@@ -3,10 +3,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use greentic_session::SessionData;
+use greentic_session::{SessionData, SessionKey as StoreSessionKey};
 use greentic_types::{
-    EnvId, FlowId, GreenticError, SessionCursor as TypesSessionCursor, TenantCtx, TenantId, UserId,
+    EnvId, FlowId, GreenticError, PackId, ReplyScope, SessionCursor as TypesSessionCursor,
+    TenantCtx, TenantId, UserId,
 };
+use rand::{Rng, rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -25,7 +27,7 @@ use crate::config::{HostConfig, SecretsPolicy};
 use crate::pack::FlowDescriptor;
 use crate::runner::engine::{FlowContext, FlowEngine, FlowSnapshot, FlowStatus, FlowWait};
 use crate::runner::mocks::MockLayer;
-use crate::secrets::DynSecretsManager;
+use crate::secrets::{DynSecretsManager, scoped_secret_path};
 use crate::storage::session::DynSessionStore;
 
 const DEFAULT_ENV: &str = "local";
@@ -41,56 +43,83 @@ impl FlowResumeStore {
         Self { store }
     }
 
-    fn fetch(&self, envelope: &IngressEnvelope) -> GResult<Option<FlowSnapshot>> {
-        let (mut ctx, user, _) = build_store_ctx(envelope)?;
+    pub fn fetch(&self, envelope: &IngressEnvelope) -> GResult<Option<FlowSnapshot>> {
+        let (mut ctx, user, _, scope) = build_store_ctx(envelope)?;
         ctx = ctx.with_user(Some(user.clone()));
-        if let Some((_key, data)) = self
-            .store
-            .find_by_user(&ctx, &user)
-            .map_err(map_store_error)?
-        {
-            let record: FlowResumeRecord =
-                serde_json::from_str(&data.context_json).map_err(|err| RunnerError::Session {
-                    reason: format!("failed to decode flow resume snapshot: {err}"),
-                })?;
-            if record.snapshot.flow_id == envelope.flow_id {
-                return Ok(Some(record.snapshot));
+
+        let mut scopes = vec![scope.clone()];
+        if scope.correlation.is_some() {
+            let mut base = scope.clone();
+            base.correlation = None;
+            scopes.push(base);
+        }
+
+        for lookup in scopes {
+            if let Some(key) = self
+                .store
+                .find_wait_by_scope(&ctx, &user, &lookup)
+                .map_err(map_store_error)?
+            {
+                let Some(data) = self.store.get_session(&key).map_err(map_store_error)? else {
+                    continue;
+                };
+                let record: FlowResumeRecord =
+                    serde_json::from_str(&data.context_json).map_err(|err| {
+                        RunnerError::Session {
+                            reason: format!("failed to decode flow resume snapshot: {err}"),
+                        }
+                    })?;
+                if record.snapshot.flow_id == envelope.flow_id {
+                    if let Some(pack_id) = envelope.pack_id.as_deref()
+                        && record.snapshot.pack_id != pack_id
+                    {
+                        return Err(RunnerError::Session {
+                            reason: format!(
+                                "resume pack mismatch: expected {pack_id}, found {}",
+                                record.snapshot.pack_id
+                            ),
+                        });
+                    }
+                    return Ok(Some(record.snapshot));
+                }
             }
         }
+
         Ok(None)
     }
 
-    fn save(&self, envelope: &IngressEnvelope, wait: &FlowWait) -> GResult<()> {
-        let (ctx, user, hint) = build_store_ctx(envelope)?;
+    pub fn save(&self, envelope: &IngressEnvelope, wait: &FlowWait) -> GResult<ReplyScope> {
+        let (ctx, user, hint, scope) = build_store_ctx(envelope)?;
         let record = FlowResumeRecord {
             snapshot: wait.snapshot.clone(),
             reason: wait.reason.clone(),
         };
         let data = record_to_session_data(&record, ctx.clone(), &user, &hint)?;
-        let existing = self
-            .store
-            .find_by_user(&ctx, &user)
-            .map_err(map_store_error)?;
-        if let Some((key, _)) = existing {
-            self.store
-                .update_session(&key, data)
-                .map_err(map_store_error)?;
-        } else {
-            self.store
-                .create_session(&ctx, data)
-                .map_err(map_store_error)?;
+        let mut reply_scope = scope.clone();
+        if reply_scope.correlation.is_none() {
+            reply_scope.correlation = Some(generate_correlation_id());
         }
-        Ok(())
+        let mut store_scope = scope;
+        store_scope.correlation = None;
+        let session_key = StoreSessionKey::new(format!("{hint}::{}", store_scope.scope_hash()));
+        self.store
+            .register_wait(&ctx, &user, &store_scope, &session_key, data, None)
+            .map_err(map_store_error)?;
+        Ok(reply_scope)
     }
 
-    fn clear(&self, envelope: &IngressEnvelope) -> GResult<()> {
-        let (ctx, user, _) = build_store_ctx(envelope)?;
-        if let Some((key, _)) = self
-            .store
-            .find_by_user(&ctx, &user)
-            .map_err(map_store_error)?
-        {
-            self.store.remove_session(&key).map_err(map_store_error)?;
+    pub fn clear(&self, envelope: &IngressEnvelope) -> GResult<()> {
+        let (ctx, user, _, scope) = build_store_ctx(envelope)?;
+        let mut scopes = vec![scope.clone()];
+        if scope.correlation.is_some() {
+            let mut base = scope;
+            base.correlation = None;
+            scopes.push(base);
+        }
+        for lookup in scopes {
+            self.store
+                .clear_wait(&ctx, &user, &lookup)
+                .map_err(map_store_error)?;
         }
         Ok(())
     }
@@ -103,16 +132,28 @@ struct FlowResumeRecord {
     reason: Option<String>,
 }
 
-fn build_store_ctx(envelope: &IngressEnvelope) -> GResult<(TenantCtx, UserId, String)> {
-    let hint = envelope
+fn build_store_ctx(envelope: &IngressEnvelope) -> GResult<(TenantCtx, UserId, String, ReplyScope)> {
+    let base_hint = envelope
         .session_hint
         .clone()
         .unwrap_or_else(|| envelope.canonical_session_hint());
+    let hint = if let Some(pack_id) = envelope.pack_id.as_deref() {
+        format!("{base_hint}::pack={pack_id}")
+    } else {
+        base_hint.clone()
+    };
     let user = derive_user_id(&hint)?;
+    let scope = envelope
+        .reply_scope
+        .clone()
+        .ok_or_else(|| RunnerError::Session {
+            reason: "Cannot suspend: reply_scope missing; provider plugin must supply ReplyScope"
+                .to_string(),
+        })?;
     let mut ctx = envelope.tenant_ctx();
     ctx = ctx.with_session(hint.clone());
     ctx = ctx.with_user(Some(user.clone()));
-    Ok((ctx, user, hint))
+    Ok((ctx, user, hint, scope))
 }
 
 fn record_to_session_data(
@@ -122,6 +163,7 @@ fn record_to_session_data(
     session_hint: &str,
 ) -> GResult<SessionData> {
     let flow = FlowId::from_str(record.snapshot.flow_id.as_str()).map_err(map_store_error)?;
+    let pack = PackId::from_str(record.snapshot.pack_id.as_str()).map_err(map_store_error)?;
     let mut cursor = TypesSessionCursor::new(record.snapshot.next_node.clone());
     if let Some(reason) = record.reason.clone() {
         cursor = cursor.with_wait_reason(reason);
@@ -136,6 +178,7 @@ fn record_to_session_data(
     Ok(SessionData {
         tenant_ctx: ctx,
         flow_id: flow,
+        pack_id: Some(pack),
         cursor,
         context_json,
     })
@@ -153,6 +196,12 @@ fn map_store_error(err: GreenticError) -> RunnerError {
     }
 }
 
+fn generate_correlation_id() -> String {
+    let mut bytes = [0u8; 16];
+    rng().fill(&mut bytes);
+    hex::encode(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +213,7 @@ mod tests {
         IngressEnvelope {
             tenant: "demo".into(),
             env: Some("local".into()),
+            pack_id: Some("pack.demo".into()),
             flow_id: "flow.main".into(),
             flow_type: None,
             action: Some("messaging".into()),
@@ -176,6 +226,12 @@ mod tests {
             timestamp: None,
             payload: json!({ "text": "hi" }),
             metadata: None,
+            reply_scope: Some(ReplyScope {
+                conversation: "conv".into(),
+                thread: None,
+                reply_to: None,
+                correlation: None,
+            }),
         }
     }
 
@@ -189,6 +245,7 @@ mod tests {
         FlowWait {
             reason: Some("await-user".into()),
             snapshot: FlowSnapshot {
+                pack_id: "pack.demo".into(),
                 flow_id: "flow.main".into(),
                 next_node: "node-2".into(),
                 state,
@@ -212,7 +269,7 @@ mod tests {
         assert!(store.fetch(&envelope)?.is_none());
 
         let wait = sample_wait();
-        store.save(&envelope, &wait)?;
+        let _ = store.save(&envelope, &wait)?;
         let snapshot = store.fetch(&envelope)?.expect("snapshot missing");
         assert_eq!(snapshot.flow_id, wait.snapshot.flow_id);
         assert_eq!(snapshot.next_node, wait.snapshot.next_node);
@@ -227,11 +284,11 @@ mod tests {
         let store = FlowResumeStore::new(new_session_store());
         let envelope = sample_envelope();
         let mut wait = sample_wait();
-        store.save(&envelope, &wait)?;
+        let _ = store.save(&envelope, &wait)?;
 
         wait.snapshot.next_node = "node-3".into();
         wait.reason = Some("retry".into());
-        store.save(&envelope, &wait)?;
+        let _ = store.save(&envelope, &wait)?;
 
         let snapshot = store.fetch(&envelope)?.expect("snapshot missing");
         assert_eq!(snapshot.next_node, "node-3");
@@ -244,6 +301,7 @@ mod tests {
         let envelope = IngressEnvelope {
             tenant: "demo".into(),
             env: None,
+            pack_id: None,
             flow_id: "flow.main".into(),
             flow_type: None,
             action: None,
@@ -256,6 +314,7 @@ mod tests {
             timestamp: None,
             payload: json!({}),
             metadata: None,
+            reply_scope: None,
         }
         .canonicalize();
 
@@ -309,7 +368,8 @@ impl StateMachineRuntime {
         mocks: Option<Arc<MockLayer>>,
     ) -> Result<Self> {
         let policy = Arc::new(config.secrets_policy.clone());
-        let secrets = Arc::new(PolicySecretsHost::new(policy, secrets_manager));
+        let tenant_ctx = config.tenant_ctx();
+        let secrets = Arc::new(PolicySecretsHost::new(policy, secrets_manager, tenant_ctx));
         let telemetry = Arc::new(FnTelemetryHost::new(|span, fields| {
             tracing::debug!(?span, ?fields, "telemetry emit");
             Ok(())
@@ -349,10 +409,14 @@ impl StateMachineRuntime {
             .session_hint
             .clone()
             .unwrap_or_else(|| envelope.canonical_session_hint());
+        let pack_id = envelope.pack_id.clone().ok_or_else(|| {
+            anyhow!("pack_id missing; ingress must specify pack_id for multi-pack flows")
+        })?;
         let input =
             serde_json::to_value(&envelope).context("failed to serialise ingress envelope")?;
         let request = RunFlowRequest {
             tenant: tenant_ctx,
+            pack_id,
             flow_id: envelope.flow_id.clone(),
             input,
             session_hint: Some(session_hint),
@@ -370,11 +434,16 @@ impl StateMachineRuntime {
 struct PolicySecretsHost {
     policy: Arc<SecretsPolicy>,
     manager: DynSecretsManager,
+    tenant_ctx: TenantCtx,
 }
 
 impl PolicySecretsHost {
-    fn new(policy: Arc<SecretsPolicy>, manager: DynSecretsManager) -> Self {
-        Self { policy, manager }
+    fn new(policy: Arc<SecretsPolicy>, manager: DynSecretsManager, tenant_ctx: TenantCtx) -> Self {
+        Self {
+            policy,
+            manager,
+            tenant_ctx,
+        }
     }
 }
 
@@ -386,9 +455,13 @@ impl SecretsHost for PolicySecretsHost {
                 reason: format!("secret {name} denied by policy"),
             });
         }
+        let scoped_key =
+            scoped_secret_path(&self.tenant_ctx, name).map_err(|err| RunnerError::Secrets {
+                reason: format!("secret {name} scope invalid: {err}"),
+            })?;
         let bytes = self
             .manager
-            .read(name)
+            .read(scoped_key.as_str())
             .await
             .map_err(|err| RunnerError::Secrets {
                 reason: format!("secret {name} unavailable: {err}"),
@@ -405,6 +478,7 @@ fn build_flow_definitions(flows: &[FlowDescriptor]) -> Vec<FlowDefinition> {
         .map(|descriptor| {
             FlowDefinition::new(
                 super::api::FlowSummary {
+                    pack_id: descriptor.pack_id.clone(),
                     id: descriptor.id.clone(),
                     name: descriptor
                         .description
@@ -460,6 +534,7 @@ impl Adapter for PackFlowAdapter {
                     reason: format!("invalid ingress payload: {err}"),
                 }
             })?;
+        let envelope = envelope.canonicalize();
         let flow_id = call.operation.clone();
         let action_owned = envelope.action.clone();
         let session_owned = envelope
@@ -470,9 +545,26 @@ impl Adapter for PackFlowAdapter {
         let payload = envelope.payload.clone();
         let retry_config = self.config.retry_config().into();
 
+        let pack_id = if let Some(pack_id) = envelope.pack_id.as_deref() {
+            let found = self.engine.flow_by_key(pack_id, &flow_id).is_some();
+            if !found {
+                return Err(RunnerError::AdapterCall {
+                    reason: format!("flow {flow_id} not registered for pack {pack_id}"),
+                });
+            }
+            pack_id
+        } else if let Some(flow) = self.engine.flow_by_id(&flow_id) {
+            flow.pack_id.as_str()
+        } else {
+            return Err(RunnerError::AdapterCall {
+                reason: format!("flow {flow_id} is ambiguous; pack_id is required"),
+            });
+        };
+
         let mocks = self.mocks.as_deref();
         let ctx = FlowContext {
             tenant: &self.tenant,
+            pack_id,
             flow_id: &flow_id,
             node_id: None,
             tool: None,
@@ -485,7 +577,12 @@ impl Adapter for PackFlowAdapter {
         };
 
         let execution = if let Some(snapshot) = self.resume.fetch(&envelope)? {
-            self.engine.resume(ctx, snapshot, payload).await
+            let resume_pack_id = snapshot.pack_id.clone();
+            let resume_ctx = FlowContext {
+                pack_id: resume_pack_id.as_str(),
+                ..ctx
+            };
+            self.engine.resume(resume_ctx, snapshot, payload).await
         } else {
             self.engine.execute(ctx, payload).await
         }
@@ -499,11 +596,12 @@ impl Adapter for PackFlowAdapter {
                 Ok(execution.output)
             }
             FlowStatus::Waiting(wait) => {
-                self.resume.save(&envelope, &wait)?;
+                let reply_scope = self.resume.save(&envelope, &wait)?;
                 Ok(json!({
                     "status": "pending",
                     "reason": wait.reason,
                     "resume": wait.snapshot,
+                    "reply_scope": reply_scope,
                     "response": execution.output,
                 }))
             }
@@ -516,6 +614,8 @@ pub struct IngressEnvelope {
     pub tenant: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_id: Option<String>,
     pub flow_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow_type: Option<String>,
@@ -539,6 +639,8 @@ pub struct IngressEnvelope {
     pub payload: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_scope: Option<ReplyScope>,
 }
 
 impl IngressEnvelope {
@@ -563,6 +665,16 @@ impl IngressEnvelope {
         }
         if self.session_hint.is_none() {
             self.session_hint = Some(self.canonical_session_hint());
+        }
+        if self.reply_scope.is_none()
+            && let Some(conversation) = self.conversation.clone()
+        {
+            self.reply_scope = Some(ReplyScope {
+                conversation,
+                thread: None,
+                reply_to: None,
+                correlation: None,
+            });
         }
         self
     }

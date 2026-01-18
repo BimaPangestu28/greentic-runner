@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use greentic_session::inmemory::InMemorySessionStore;
 use greentic_session::{SessionData, SessionKey as StoreSessionKey, SessionStore};
 use greentic_types::{
-    EnvId, FlowId, GreenticError, SessionCursor as TypesSessionCursor, TenantCtx, TenantId, UserId,
+    EnvId, FlowId, GreenticError, PackId, SessionCursor as TypesSessionCursor, TenantCtx, TenantId,
+    UserId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -34,6 +35,7 @@ impl SessionStoreHost {
         let base_ctx = tenant_ctx_from_key(key)?;
         let user = user_id_from_key(key)?;
         let ctx = base_ctx.clone().with_user(Some(user.clone()));
+        #[allow(deprecated)]
         let result = self
             .store
             .find_by_user(&ctx, &user)
@@ -41,6 +43,7 @@ impl SessionStoreHost {
         if let Some((store_key, data)) = result {
             let snapshot = decode_snapshot(&data)?;
             if snapshot.key.tenant_key != key.tenant_key
+                || snapshot.key.pack_id != key.pack_id
                 || snapshot.key.flow_id != key.flow_id
                 || snapshot.key.session_hint != key.session_hint
             {
@@ -64,11 +67,12 @@ impl SessionStoreHost {
         user: &UserId,
     ) -> GResult<StoreSessionKey> {
         let data = encode_snapshot(snapshot, ctx.clone(), user)?;
-        match self
+        #[allow(deprecated)]
+        let existing = self
             .store
             .find_by_user(&ctx, user)
-            .map_err(map_store_error)?
-        {
+            .map_err(map_store_error)?;
+        match existing {
             Some((store_key, _)) => {
                 self.store
                     .update_session(&store_key, data)
@@ -152,6 +156,7 @@ fn encode_snapshot(
     user: &UserId,
 ) -> GResult<SessionData> {
     let flow_id = FlowId::from_str(snapshot.key.flow_id.as_str()).map_err(map_store_error)?;
+    let pack_id = PackId::from_str(snapshot.key.pack_id.as_str()).map_err(map_store_error)?;
     ctx = ctx
         .with_flow(snapshot.key.flow_id.clone())
         .with_session(snapshot.session_id.clone());
@@ -167,6 +172,7 @@ fn encode_snapshot(
     Ok(SessionData {
         tenant_ctx: ctx.with_user(Some(user.clone())),
         flow_id,
+        pack_id: Some(pack_id),
         cursor,
         context_json,
     })
@@ -196,7 +202,7 @@ fn user_id_from_key(key: &SessionKey) -> GResult<UserId> {
     let hint = key
         .session_hint
         .clone()
-        .unwrap_or_else(|| format!("{}::{}", key.tenant_key, key.flow_id));
+        .unwrap_or_else(|| format!("{}::{}::{}", key.tenant_key, key.pack_id, key.flow_id));
     let digest = Sha256::digest(hint.as_bytes());
     let slug = format!("sess{}", hex::encode(&digest[..8]));
     UserId::from_str(&slug).map_err(map_store_error)
