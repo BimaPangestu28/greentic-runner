@@ -1,4 +1,7 @@
 tenant: Weather Demo Strict Pack
+pack_id: demo.weather.strict
+pack_ref: demo.weather.strict@0.1.0
+pack_locator: fs:///packs/weather-demo-strict.gtpack
 env_passthrough:
 - ALERTS_REGION
 - OTEL_EXPORTER_OTLP_ENDPOINT
@@ -9,7 +12,8 @@ network_allow:
 secrets_required:
 - ALERTS_TOKEN
 flows:
-- name: alerts_flow
+- id: alerts_flow
+  name: alerts_flow
   urls:
   - https://alerts.weather.example.com
   secrets:

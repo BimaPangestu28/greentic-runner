@@ -64,9 +64,23 @@ fn main() -> Result<()> {
         strict: cli.strict,
         complete: cli.complete,
         component: component_features.clone(),
+        pack_locator: None,
     };
 
     if let Some(pack_path) = cli.pack {
+        let pack_locator = Some(format!(
+            "fs://{}",
+            pack_path
+                .canonicalize()
+                .with_context(|| {
+                    format!("failed to resolve pack path {}", pack_path.display())
+                })?
+                .display()
+        ));
+        let common_opts = GeneratorOptions {
+            pack_locator,
+            ..common_opts
+        };
         let input_is_dir = pack_path.is_dir();
         let (pack_root, _temp_dir) = resolve_pack_root(&pack_path)?;
         let metadata = gen_bindings::load_pack_root(&pack_root)?;

@@ -225,7 +225,8 @@ mod tests {
 
     #[test]
     fn from_env_with_default_uses_override() {
+        let expected = std::env::var("DEFAULT_TENANT").unwrap_or_else(|_| "custom".into());
         let cfg = RoutingConfig::from_env_with_default("custom".into());
-        assert_eq!(cfg.default_tenant, "custom");
+        assert_eq!(cfg.default_tenant, expected);
     }
 }

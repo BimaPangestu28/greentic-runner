@@ -1,0 +1,10 @@
+{
+  "dev.local.hello2-pack": {
+    "main_pack": {
+      "locator": "fs:///projects/ai/greentic-ng/tests/hello2-pack/dist/hello2.gtpack",
+      "name": "dev.local.hello2-pack",
+      "version": "0.1.0"
+    },
+    "overlays": []
+  }
+}

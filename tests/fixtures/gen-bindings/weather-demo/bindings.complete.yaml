@@ -1,4 +1,7 @@
 tenant: Weather Demo Pack
+pack_id: demo.weather
+pack_ref: demo.weather@0.1.0
+pack_locator: fs:///packs/weather-demo.gtpack
 env_passthrough:
 - OTEL_EXPORTER_OTLP_ENDPOINT
 - OTEL_RESOURCE_ATTRIBUTES
@@ -9,7 +12,8 @@ network_allow:
 secrets_required:
 - WEATHER_API_KEY
 flows:
-- name: weather_flow
+- id: weather_flow
+  name: weather_flow
   urls:
   - https://api.weather.example.com
   secrets:

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use greentic_runner::gen_bindings::{self, GeneratorOptions};
+use greentic_runner_host::gtbind;
 use greentic_types::cbor::encode_pack_manifest;
 use greentic_types::{
     Flow, FlowId, FlowKind, PackFlowEntry, PackId, PackKind, PackManifest, PackSignatures,
@@ -69,6 +70,7 @@ fn complete_binding_matches_golden() {
         &dir,
         GeneratorOptions {
             complete: true,
+            pack_locator: Some("fs:///packs/weather-demo.gtpack".to_string()),
             ..Default::default()
         },
     );
@@ -85,6 +87,7 @@ fn strict_binding_matches_golden() {
         GeneratorOptions {
             complete: true,
             strict: true,
+            pack_locator: Some("fs:///packs/weather-demo-strict.gtpack".to_string()),
             ..Default::default()
         },
     );
@@ -97,6 +100,37 @@ fn load_pack_root_accepts_manifest_cbor() {
     let temp = tempfile::tempdir().expect("temp dir");
     write_manifest_cbor(temp.path());
     let metadata = gen_bindings::load_pack_root(temp.path()).expect("load pack root from manifest");
-    assert_eq!(metadata.name, "demo.pack");
+    assert_eq!(metadata.pack_id, "demo.pack");
     assert_eq!(metadata.flows.len(), 1);
+}
+
+#[test]
+fn generated_bindings_are_gtbind_compatible() {
+    let dir = fixture("weather-demo");
+    let yaml = generate_serialized(
+        &dir,
+        GeneratorOptions {
+            complete: true,
+            pack_locator: Some("fs:///packs/weather-demo.gtpack".to_string()),
+            ..Default::default()
+        },
+    );
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("bindings.gtbind");
+    fs::write(&path, yaml).expect("write bindings");
+
+    let tenants = gtbind::load_gtbinds(&[path]).expect("load gtbind");
+    let tenant = tenants
+        .get("Weather Demo Pack")
+        .expect("tenant entry present");
+    assert_eq!(tenant.packs.len(), 1);
+    assert_eq!(tenant.packs[0].pack_id, "demo.weather");
+    assert_eq!(tenant.packs[0].pack_ref, "demo.weather@0.1.0");
+    assert_eq!(
+        tenant.packs[0]
+            .pack_locator
+            .as_deref()
+            .expect("pack locator"),
+        "fs:///packs/weather-demo.gtpack"
+    );
 }

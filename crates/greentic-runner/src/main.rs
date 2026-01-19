@@ -11,6 +11,7 @@ use tokio::fs as async_fs;
 use anyhow::{Context, Result, bail};
 use greentic_distributor_client::dist::{DistClient, DistOptions};
 use serde::Deserialize;
+use serde_json::json;
 
 #[derive(Debug, Parser)]
 #[command(name = "greentic-runner")]
@@ -88,18 +89,28 @@ struct RunArgs {
     /// Disable the component compilation cache
     #[arg(long)]
     no_cache: bool,
+
+    /// Emit JSON errors on failure
+    #[arg(long)]
+    json: bool,
 }
 
 #[greentic_types::telemetry::main(service_name = "greentic-runner")]
 async fn main() {
-    if let Err(err) = run().await {
-        tracing::error!(error = %err, "runner failed");
+    let cli = Cli::parse();
+    let json_output = cli.run.json;
+    if let Err(err) = run_with_cli(cli).await {
+        if json_output {
+            emit_json_error(&err);
+        } else {
+            tracing::error!(error = %err, "runner failed");
+            eprintln!("error: {err}");
+        }
         std::process::exit(1);
     }
 }
 
-async fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+async fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
     if let Some(command) = cli.command {
         return match command {
             Command::Cache(cmd) => run_cache(cmd).await,
@@ -127,6 +138,21 @@ async fn run() -> anyhow::Result<()> {
         greentic_runner_host::gtbind::collect_gtbind_paths(&run.bindings, &run.bindings_dir)?;
     let cfg = RunnerConfig::from_config(resolved, bindings)?.with_port(run.port);
     run_host(cfg).await
+}
+
+fn emit_json_error(err: &anyhow::Error) {
+    let chain = err
+        .chain()
+        .skip(1)
+        .map(|source| source.to_string())
+        .collect::<Vec<_>>();
+    let payload = json!({
+        "error": {
+            "message": err.to_string(),
+            "chain": chain,
+        }
+    });
+    println!("{}", payload);
 }
 
 fn build_resolver(

@@ -23,6 +23,7 @@ use greentic_config_types::{
 #[cfg(feature = "telemetry")]
 use greentic_telemetry::export::{ExportConfig as TelemetryExportConfig, ExportMode, Sampling};
 use runner_core::env::PackConfig;
+use serde_json::json;
 use tokio::signal;
 
 pub mod boot;
@@ -91,11 +92,12 @@ impl RunnerConfig {
         if tenant_bindings.is_empty() {
             anyhow::bail!("no gtbind files loaded");
         }
-        let pack = pack_config_from(
+        let mut pack = pack_config_from(
             &resolved_config.config.packs,
             &resolved_config.config.paths,
             &resolved_config.config.network,
         )?;
+        maybe_write_gtbind_index(&tenant_bindings, &resolved_config.config.paths, &mut pack)?;
         let refresh = parse_refresh_interval(std::env::var("PACK_REFRESH_INTERVAL").ok())?;
         let port = std::env::var("PORT")
             .ok()
@@ -150,6 +152,86 @@ impl RunnerConfig {
         self.wasi_policy = policy;
         self
     }
+}
+
+fn maybe_write_gtbind_index(
+    tenant_bindings: &HashMap<String, TenantBindings>,
+    paths: &PathsConfig,
+    pack: &mut PackConfig,
+) -> Result<()> {
+    let mut uses_locators = false;
+    for binding in tenant_bindings.values() {
+        for pack_binding in &binding.packs {
+            if pack_binding.pack_locator.is_some() {
+                uses_locators = true;
+            }
+        }
+    }
+    if !uses_locators {
+        return Ok(());
+    }
+
+    let mut entries = serde_json::Map::new();
+    for binding in tenant_bindings.values() {
+        let mut packs = Vec::new();
+        for pack_binding in &binding.packs {
+            let locator = pack_binding.pack_locator.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "gtbind {} missing pack_locator for pack {}",
+                    binding.tenant,
+                    pack_binding.pack_id
+                )
+            })?;
+            let (name, version_or_digest) =
+                pack_binding.pack_ref.split_once('@').ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "gtbind {} invalid pack_ref {} (expected name@version)",
+                        binding.tenant,
+                        pack_binding.pack_ref
+                    )
+                })?;
+            if name != pack_binding.pack_id {
+                anyhow::bail!(
+                    "gtbind {} pack_ref {} does not match pack_id {}",
+                    binding.tenant,
+                    pack_binding.pack_ref,
+                    pack_binding.pack_id
+                );
+            }
+            let mut entry = serde_json::Map::new();
+            entry.insert("name".to_string(), json!(name));
+            if version_or_digest.contains(':') {
+                entry.insert("digest".to_string(), json!(version_or_digest));
+            } else {
+                entry.insert("version".to_string(), json!(version_or_digest));
+            }
+            entry.insert("locator".to_string(), json!(locator));
+            packs.push(serde_json::Value::Object(entry));
+        }
+        let main_pack = packs
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("gtbind {} has no packs", binding.tenant))?;
+        let overlays = packs.into_iter().skip(1).collect::<Vec<_>>();
+        entries.insert(
+            binding.tenant.clone(),
+            json!({
+                "main_pack": main_pack,
+                "overlays": overlays,
+            }),
+        );
+    }
+
+    let index_path = paths.greentic_root.join("packs").join("gtbind.index.json");
+    if let Some(parent) = index_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let serialized = serde_json::to_vec_pretty(&serde_json::Value::Object(entries))?;
+    fs::write(&index_path, serialized)
+        .with_context(|| format!("failed to write {}", index_path.display()))?;
+    pack.index_location = runner_core::env::IndexLocation::File(index_path);
+    Ok(())
 }
 
 fn parse_refresh_interval(value: Option<String>) -> Result<Duration> {

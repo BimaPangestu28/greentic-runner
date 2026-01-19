@@ -21,7 +21,9 @@ fn yaml_string(value: impl Into<String>) -> Value {
 
 #[derive(Debug)]
 pub struct PackMetadata {
-    pub name: String,
+    pub tenant: String,
+    pub pack_id: String,
+    pub pack_ref: String,
     pub flows: Vec<FlowMetadata>,
     pub hints: BindingsHints,
 }
@@ -126,7 +128,17 @@ pub fn load_pack(pack_dir: &Path) -> Result<PackMetadata> {
         }
     }
 
-    let name = pack_manifest
+    let pack_id = pack_manifest
+        .pack_id
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("pack.yaml missing pack_id"))?;
+    let version = pack_manifest
+        .version
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("pack.yaml missing version"))?;
+    let pack_ref = format!("{}@{}", pack_id, version);
+
+    let tenant = pack_manifest
         .name
         .or_else(|| {
             pack_dir
@@ -134,9 +146,15 @@ pub fn load_pack(pack_dir: &Path) -> Result<PackMetadata> {
                 .and_then(|n| n.to_str())
                 .map(|s| s.to_string())
         })
-        .unwrap_or_else(|| "pack".to_string());
+        .unwrap_or_else(|| pack_id.clone());
 
-    Ok(PackMetadata { name, flows, hints })
+    Ok(PackMetadata {
+        tenant,
+        pack_id,
+        pack_ref,
+        flows,
+        hints,
+    })
 }
 
 pub fn load_pack_root(pack_root: &Path) -> Result<PackMetadata> {
@@ -205,14 +223,24 @@ fn load_pack_manifest_cbor(pack_root: &Path, cbor_path: &Path) -> Result<PackMet
         BindingsHints::default()
     };
 
-    let name = manifest.pack_id.to_string();
+    let pack_id = manifest.pack_id.to_string();
+    let pack_ref = format!("{}@{}", pack_id, manifest.version);
+    let tenant = pack_id.clone();
 
-    Ok(PackMetadata { name, flows, hints })
+    Ok(PackMetadata {
+        tenant,
+        pack_id,
+        pack_ref,
+        flows,
+        hints,
+    })
 }
 
 #[derive(Debug, Deserialize)]
 struct PackManifest {
     name: Option<String>,
+    pack_id: Option<String>,
+    version: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -220,11 +248,16 @@ pub struct GeneratorOptions {
     pub strict: bool,
     pub complete: bool,
     pub component: Option<ComponentFeatures>,
+    pub pack_locator: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct GeneratedBindings {
     pub tenant: String,
+    pub pack_id: String,
+    pub pack_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pack_locator: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -239,7 +272,9 @@ pub struct GeneratedBindings {
 
 #[derive(Debug, Serialize)]
 pub struct FlowHint {
-    pub name: String,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub urls: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -259,7 +294,8 @@ impl FlowHint {
         bindings.env.extend(meta.env);
         bindings.mcp_components.extend(meta.mcp_components);
         FlowHint {
-            name: flow.name.clone(),
+            id: flow.name.clone(),
+            name: Some(flow.name.clone()),
             urls: bindings.urls.clone(),
             secrets: bindings.secrets.clone(),
             env: bindings.env.clone(),
@@ -435,7 +471,10 @@ pub fn generate_bindings(
     }
 
     Ok(GeneratedBindings {
-        tenant: metadata.name.clone(),
+        tenant: metadata.tenant.clone(),
+        pack_id: metadata.pack_id.clone(),
+        pack_ref: metadata.pack_ref.clone(),
+        pack_locator: opts.pack_locator.clone(),
         env_passthrough: env,
         network_allow: network,
         secrets_required: secrets,

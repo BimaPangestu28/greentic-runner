@@ -62,7 +62,7 @@ impl HostServer {
                 "/whatsapp/webhook",
                 get(adapt_whatsapp::verify).post(adapt_whatsapp::webhook),
             )
-            .route("/webhook/:flow_id", any(adapt_webhook::dispatch))
+            .route("/webhook/{flow_id}", any(adapt_webhook::dispatch))
             .route("/healthz", get(http::health::handler))
             .route("/admin/packs/status", get(admin::status))
             .route("/admin/packs/reload", post(admin::reload))

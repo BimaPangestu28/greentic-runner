@@ -9,6 +9,7 @@ use serde::Deserialize;
 pub struct PackBinding {
     pub pack_id: String,
     pub pack_ref: String,
+    pub pack_locator: Option<String>,
     pub flows: Vec<String>,
 }
 
@@ -24,6 +25,8 @@ struct GtBindFile {
     tenant: String,
     pack_id: String,
     pack_ref: String,
+    #[serde(default)]
+    pack_locator: Option<String>,
     #[serde(default)]
     flows: Vec<GtBindFlow>,
     #[serde(default)]
@@ -67,6 +70,9 @@ pub fn load_gtbinds(paths: &[PathBuf]) -> Result<HashMap<String, TenantBindings>
         if raw.pack_id.trim().is_empty() {
             bail!("gtbind {} missing pack_id", path.display());
         }
+        if raw.pack_ref.trim().is_empty() {
+            bail!("gtbind {} missing pack_ref", path.display());
+        }
         if raw.tenant.trim().is_empty() {
             bail!("gtbind {} missing tenant", path.display());
         }
@@ -79,6 +85,7 @@ pub fn load_gtbinds(paths: &[PathBuf]) -> Result<HashMap<String, TenantBindings>
         let pack = PackBinding {
             pack_id: raw.pack_id,
             pack_ref: raw.pack_ref,
+            pack_locator: raw.pack_locator,
             flows,
         };
         let entry = tenants
@@ -118,6 +125,19 @@ fn merge_pack(tenant: &mut TenantBindings, pack: PackBinding) -> Result<()> {
                 tenant.tenant,
                 pack.pack_id
             );
+        }
+        match (&existing.pack_locator, &pack.pack_locator) {
+            (Some(existing), Some(incoming)) if existing != incoming => {
+                bail!(
+                    "pack_locator mismatch for tenant {} pack {}",
+                    tenant.tenant,
+                    pack.pack_id
+                );
+            }
+            (None, Some(incoming)) => {
+                existing.pack_locator = Some(incoming.clone());
+            }
+            _ => {}
         }
         let mut flows = HashSet::new();
         flows.extend(existing.flows.iter().cloned());
