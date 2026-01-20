@@ -41,17 +41,24 @@ struct FaultState {
     counters: FaultCounters,
 }
 
-static FAULT: Lazy<Option<Arc<FaultState>>> = Lazy::new(|| {
-    let config = FaultConfig::from_env();
-    if config.is_enabled() {
-        Some(Arc::new(FaultState {
-            config,
-            counters: FaultCounters::default(),
-        }))
-    } else {
-        None
+static FAULT: Lazy<Mutex<Option<Arc<FaultState>>>> = Lazy::new(|| Mutex::new(None));
+
+fn fault_state() -> Option<Arc<FaultState>> {
+    let mut guard = FAULT.lock();
+    if let Some(state) = guard.as_ref() {
+        return Some(Arc::clone(state));
     }
-});
+    let config = FaultConfig::from_env();
+    if !config.is_enabled() {
+        return None;
+    }
+    let state = Arc::new(FaultState {
+        config,
+        counters: FaultCounters::default(),
+    });
+    *guard = Some(Arc::clone(&state));
+    Some(state)
+}
 
 impl FaultConfig {
     pub fn from_env() -> Self {
@@ -77,14 +84,14 @@ impl FaultConfig {
 }
 
 pub fn wrap_state_store(store: DynStateStore) -> DynStateStore {
-    match FAULT.as_ref() {
-        Some(state) => Arc::new(FaultyStateStore::new(store, Arc::clone(state))),
+    match fault_state() {
+        Some(state) => Arc::new(FaultyStateStore::new(store, state)),
         None => store,
     }
 }
 
 pub async fn maybe_fail_asset(reference: &str) -> Result<()> {
-    let Some(state) = FAULT.as_ref() else {
+    let Some(state) = fault_state() else {
         return Ok(());
     };
     if state.config.asset_delay_ms > 0 {
