@@ -194,6 +194,20 @@ impl Runner {
         f(&mut opts);
         run_pack_with_options(pack_path, opts)
     }
+
+    pub async fn run_pack_async<P: AsRef<Path>>(&self, pack_path: P) -> Result<RunResult> {
+        run_pack_with_options_async(pack_path, self.base.clone()).await
+    }
+
+    pub async fn run_pack_with_async<P: AsRef<Path>>(
+        &self,
+        pack_path: P,
+        f: impl FnOnce(&mut RunOptions),
+    ) -> Result<RunResult> {
+        let mut opts = self.base.clone();
+        f(&mut opts);
+        run_pack_with_options_async(pack_path, opts).await
+    }
 }
 
 impl Default for Runner {
@@ -206,6 +220,14 @@ impl Default for Runner {
 pub fn run_pack_with_options<P: AsRef<Path>>(pack_path: P, opts: RunOptions) -> Result<RunResult> {
     let runtime = Runtime::new().context("failed to create tokio runtime")?;
     runtime.block_on(run_pack_async(pack_path.as_ref(), opts))
+}
+
+/// Execute a pack with the provided options using the caller's async runtime.
+pub async fn run_pack_with_options_async<P: AsRef<Path>>(
+    pack_path: P,
+    opts: RunOptions,
+) -> Result<RunResult> {
+    run_pack_async(pack_path.as_ref(), opts).await
 }
 
 /// Reasonable defaults for local desktop invocations.
