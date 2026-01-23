@@ -33,6 +33,8 @@ fn instantiate_component(wasm: &Path, config: Arc<HostConfig>) -> Result<()> {
         default_manager()?,
         config.oauth_broker_config(),
         None,
+        None,
+        false,
     )?;
     let policy = Arc::new(RunnerWasiPolicy::default());
     let state = ComponentState::new(host_state, policy)?;

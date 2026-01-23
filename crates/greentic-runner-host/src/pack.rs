@@ -21,7 +21,7 @@ use greentic_interfaces_wasmtime::host_helpers::v1::{
     self as host_v1, HostFns, add_all_v1_to_linker,
     runner_host_http::RunnerHostHttp,
     runner_host_kv::RunnerHostKv,
-    secrets_store::{SecretsError, SecretsStoreHost},
+    secrets_store::{SecretsError, SecretsErrorV1_1, SecretsStoreHost, SecretsStoreHostV1_1},
     state_store::{
         OpAck as StateOpAck, StateKey as HostStateKey, StateStoreError as StateError,
         StateStoreHost, TenantCtx as StateTenantCtx,
@@ -71,7 +71,7 @@ use crate::testing::fault_injection::{FaultContext, FaultPoint, maybe_fail};
 
 use crate::config::HostConfig;
 use crate::fault;
-use crate::secrets::{DynSecretsManager, read_secret_blocking};
+use crate::secrets::{DynSecretsManager, read_secret_blocking, write_secret_blocking};
 use crate::storage::state::STATE_PREFIX;
 use crate::storage::{DynSessionStore, DynStateStore};
 use crate::verify;
@@ -200,6 +200,8 @@ pub struct HostState {
     oauth_config: Option<OAuthBrokerConfig>,
     oauth_host: OAuthBrokerHost,
     exec_ctx: Option<ComponentExecCtx>,
+    component_ref: Option<String>,
+    provider_core_component: bool,
 }
 
 impl HostState {
@@ -215,6 +217,8 @@ impl HostState {
         secrets: DynSecretsManager,
         oauth_config: Option<OAuthBrokerConfig>,
         exec_ctx: Option<ComponentExecCtx>,
+        component_ref: Option<String>,
+        provider_core_component: bool,
     ) -> Result<Self> {
         let default_env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
         Ok(Self {
@@ -229,6 +233,8 @@ impl HostState {
             oauth_config,
             oauth_host: OAuthBrokerHost::default(),
             exec_ctx,
+            component_ref,
+            provider_core_component,
         })
     }
 
@@ -249,6 +255,10 @@ impl HostState {
             .context("failed to read secret from manager")?;
         let value = String::from_utf8(bytes).context("secret value is not valid UTF-8")?;
         Ok(value)
+    }
+
+    fn allows_secret_write_in_provider_core_only(&self) -> bool {
+        self.provider_core_component || self.component_ref.is_none()
     }
 
     fn tenant_ctx_from_v1(&self, ctx: Option<StateTenantCtx>) -> Result<TypesTenantCtx> {
@@ -452,6 +462,55 @@ impl SecretsStoreHost for HostState {
                 warn!(secret = %key, error = %err, "secret lookup failed");
                 Err(SecretsError::NotFound)
             }
+        }
+    }
+}
+
+impl SecretsStoreHostV1_1 for HostState {
+    fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, SecretsErrorV1_1> {
+        if provider_core_only::is_enabled() {
+            warn!(secret = %key, "provider-core only mode enabled; blocking secrets store");
+            return Err(SecretsErrorV1_1::Denied);
+        }
+        if !self.config.secrets_policy.is_allowed(&key) {
+            return Err(SecretsErrorV1_1::Denied);
+        }
+        if let Some(mock) = &self.mocks
+            && let Some(value) = mock.secrets_lookup(&key)
+        {
+            return Ok(Some(value.into_bytes()));
+        }
+        let ctx = self.config.tenant_ctx();
+        match read_secret_blocking(&self.secrets, &ctx, &key) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(err) => {
+                warn!(secret = %key, error = %err, "secret lookup failed");
+                Err(SecretsErrorV1_1::NotFound)
+            }
+        }
+    }
+
+    fn put(&mut self, key: String, value: Vec<u8>) {
+        if key.trim().is_empty() {
+            warn!(secret = %key, "secret write blocked: empty key");
+            panic!("secret write denied for key {key}: invalid key");
+        }
+        if provider_core_only::is_enabled() && !self.allows_secret_write_in_provider_core_only() {
+            warn!(
+                secret = %key,
+                component = self.component_ref.as_deref().unwrap_or("<pack>"),
+                "provider-core only mode enabled; blocking secrets store write"
+            );
+            panic!("secret write denied for key {key}: provider-core-only mode");
+        }
+        if !self.config.secrets_policy.is_allowed(&key) {
+            warn!(secret = %key, "secret write denied by bindings policy");
+            panic!("secret write denied for key {key}: policy");
+        }
+        let ctx = self.config.tenant_ctx();
+        if let Err(err) = write_secret_blocking(&self.secrets, &ctx, &key, &value) {
+            warn!(secret = %key, error = %err, "secret write failed");
+            panic!("secret write failed for key {key}");
         }
     }
 }
@@ -977,14 +1036,15 @@ pub fn register_all(linker: &mut Linker<ComponentState>, allow_state_store: bool
     add_all_v1_to_linker(
         linker,
         HostFns {
-            http_client_v1_1: Some(|state| state.host_mut()),
-            http_client: Some(|state| state.host_mut()),
+            http_client_v1_1: Some(|state: &mut ComponentState| state.host_mut()),
+            http_client: Some(|state: &mut ComponentState| state.host_mut()),
             oauth_broker: None,
-            runner_host_http: Some(|state| state.host_mut()),
-            runner_host_kv: Some(|state| state.host_mut()),
-            telemetry_logger: Some(|state| state.host_mut()),
-            state_store: allow_state_store.then_some(|state| state.host_mut()),
-            secrets_store: Some(|state| state.host_mut()),
+            runner_host_http: Some(|state: &mut ComponentState| state.host_mut()),
+            runner_host_kv: Some(|state: &mut ComponentState| state.host_mut()),
+            telemetry_logger: Some(|state: &mut ComponentState| state.host_mut()),
+            state_store: allow_state_store.then_some(|state: &mut ComponentState| state.host_mut()),
+            secrets_store_v1_1: Some(|state: &mut ComponentState| state.host_mut()),
+            secrets_store: None,
         },
     )?;
     Ok(())
@@ -1436,6 +1496,8 @@ impl PackRuntime {
             Arc::clone(&self.secrets),
             self.oauth_config.clone(),
             Some(ctx.clone()),
+            Some(component_ref.to_string()),
+            false,
         )?;
         let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
         let mut store = wasmtime::Store::new(&self.engine, store_state);
@@ -1538,6 +1600,8 @@ impl PackRuntime {
             Arc::clone(&self.secrets),
             self.oauth_config.clone(),
             Some(ctx),
+            Some(component_ref.to_string()),
+            true,
         )?;
         let store_state = ComponentState::new(host_state, Arc::clone(&self.wasi_policy))?;
         let mut store = wasmtime::Store::new(&self.engine, store_state);

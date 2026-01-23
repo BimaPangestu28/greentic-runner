@@ -93,6 +93,26 @@ pub fn read_secret_blocking(
     Ok(bytes)
 }
 
+pub fn write_secret_blocking(
+    manager: &DynSecretsManager,
+    ctx: &TenantCtx,
+    key: &str,
+    value: &[u8],
+) -> Result<()> {
+    let scoped_key = scoped_secret_path(ctx, key)?;
+    if let Ok(handle) = Handle::try_current() {
+        handle
+            .block_on(manager.write(scoped_key.as_str(), value))
+            .map_err(|err| anyhow!(err.to_string()))?
+    } else {
+        Runtime::new()
+            .context("failed to initialise secrets runtime")?
+            .block_on(manager.write(scoped_key.as_str(), value))
+            .map_err(|err| anyhow!(err.to_string()))?
+    };
+    Ok(())
+}
+
 fn ensure_env_secrets_allowed() -> Result<()> {
     let env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
     let env = env.trim().to_ascii_lowercase();
