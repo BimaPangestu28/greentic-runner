@@ -3134,10 +3134,10 @@ fn locate_pack_assets(
             return Ok((Some(assets), None));
         }
     }
-    if let Some(path) = archive_hint {
-        if let Some((tempdir, assets)) = extract_assets_from_archive(path)? {
-            return Ok((Some(assets), Some(tempdir)));
-        }
+    if let Some(path) = archive_hint
+        && let Some((tempdir, assets)) = extract_assets_from_archive(path)?
+    {
+        return Ok((Some(assets), Some(tempdir)));
     }
     Ok((None, None))
 }
