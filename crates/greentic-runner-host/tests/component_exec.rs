@@ -4,7 +4,8 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use greentic_flow::flow_bundle::load_and_validate_bundle_with_flow;
 use greentic_runner_host::config::{
-    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, StateStorePolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, OperatorPolicy, RateLimits, SecretsPolicy, StateStorePolicy,
+    WebhookPolicy,
 };
 use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
 use greentic_runner_host::runner::engine::{FlowContext, FlowEngine, FlowStatus};
@@ -136,6 +137,7 @@ fn host_config(bindings_path: &Path) -> HostConfig {
         env_passthrough: Vec::new(),
         trace: TraceConfig::from_env(),
         validation: ValidationConfig::from_env(),
+        operator_policy: OperatorPolicy::allow_all(),
     }
 }
 

@@ -10,6 +10,7 @@ pub mod engine;
 pub mod flow_adapter;
 pub mod ingress_util;
 pub mod mocks;
+pub mod operator;
 pub mod templating;
 
 use std::net::SocketAddr;
@@ -63,6 +64,7 @@ impl HostServer {
                 get(adapt_whatsapp::verify).post(adapt_whatsapp::webhook),
             )
             .route("/webhook/{flow_id}", any(adapt_webhook::dispatch))
+            .route("/operator/op/invoke", post(operator::invoke))
             .route("/healthz", get(http::health::handler))
             .route("/admin/packs/status", get(admin::status))
             .route("/admin/packs/reload", post(admin::reload))

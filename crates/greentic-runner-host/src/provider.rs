@@ -2,7 +2,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
-use greentic_types::{EnvId, PackManifest, StateKey as StoreStateKey, TenantCtx, TenantId};
+use greentic_types::{
+    EnvId, PackManifest, ProviderRuntimeRef, StateKey as StoreStateKey, TenantCtx, TenantId,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -17,6 +19,19 @@ pub struct ProviderBinding {
     pub export: String,
     pub world: String,
     pub config_json: Option<String>,
+    pub pack_ref: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct OperatorProviderMetadata {
+    pub provider_id: Option<String>,
+    pub provider_type: String,
+    pub capabilities: Vec<String>,
+    pub ops: Vec<String>,
+    pub config_schema_ref: Option<String>,
+    pub state_schema_ref: Option<String>,
+    pub runtime: ProviderRuntimeRef,
+    pub docs_ref: Option<String>,
     pub pack_ref: Option<String>,
 }
 
@@ -91,6 +106,27 @@ impl ProviderRegistry {
             state_store,
             tenant: tenant_ctx,
         })
+    }
+
+    pub fn operator_metadata(&self) -> Vec<OperatorProviderMetadata> {
+        self.inline
+            .iter()
+            .map(|decl| OperatorProviderMetadata {
+                provider_id: decl.provider_id.clone(),
+                provider_type: decl.provider_type.clone(),
+                capabilities: decl.capabilities.clone(),
+                ops: decl.ops.clone(),
+                config_schema_ref: decl.config_schema_ref.clone(),
+                state_schema_ref: decl.state_schema_ref.clone(),
+                runtime: ProviderRuntimeRef {
+                    component_ref: decl.runtime.component_ref.clone(),
+                    export: decl.runtime.export.clone(),
+                    world: decl.runtime.world.clone(),
+                },
+                docs_ref: decl.docs_ref.clone(),
+                pack_ref: self.pack_ref.clone(),
+            })
+            .collect()
     }
 
     pub fn resolve(

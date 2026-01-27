@@ -2,7 +2,8 @@ use anyhow::{Context, Result, anyhow};
 use greentic_pack::reader::open_pack;
 use greentic_runner_host::RunnerWasiPolicy;
 use greentic_runner_host::config::{
-    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, StateStorePolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, OperatorPolicy, RateLimits, SecretsPolicy, StateStorePolicy,
+    WebhookPolicy,
 };
 use greentic_runner_host::pack::{ComponentResolution, FlowDescriptor, PackMetadata, PackRuntime};
 use greentic_runner_host::runner::engine::{ExecutionObserver, FlowContext, FlowEngine, NodeEvent};
@@ -544,6 +545,7 @@ fn build_host_config(profile: &ResolvedProfile, dirs: &RunDirectories) -> HostCo
         env_passthrough: Vec::new(),
         trace: TraceConfig::from_env(),
         validation: ValidationConfig::from_env(),
+        operator_policy: OperatorPolicy::allow_all(),
     }
 }
 

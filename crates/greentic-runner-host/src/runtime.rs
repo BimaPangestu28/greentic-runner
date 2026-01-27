@@ -18,6 +18,8 @@ use tokio::task::JoinHandle;
 use crate::config::HostConfig;
 use crate::engine::host::{SessionHost, StateHost};
 use crate::engine::runtime::StateMachineRuntime;
+use crate::operator_metrics::OperatorMetrics;
+use crate::operator_registry::OperatorRegistry;
 use crate::pack::{ComponentResolution, PackRuntime};
 use crate::runner::engine::FlowEngine;
 use crate::runner::mocks::MockLayer;
@@ -85,6 +87,8 @@ pub struct TenantRuntime {
     mocks: Option<Arc<MockLayer>>,
     timer_handles: Mutex<Vec<JoinHandle<()>>>,
     secrets: DynSecretsManager,
+    operator_registry: OperatorRegistry,
+    operator_metrics: Arc<OperatorMetrics>,
 }
 
 /// Block on a future whether or not we're already inside a tokio runtime.
@@ -165,6 +169,8 @@ impl TenantRuntime {
             .expect("telegram cache capacity must be > 0");
         let webhook_capacity =
             NonZeroUsize::new(WEBHOOK_CACHE_CAPACITY).expect("webhook cache capacity must be > 0");
+        let operator_registry = OperatorRegistry::build(&packs)?;
+        let operator_metrics = Arc::new(OperatorMetrics::default());
         let pack_runtimes = packs
             .iter()
             .map(|(pack, _)| Arc::clone(pack))
@@ -227,6 +233,8 @@ impl TenantRuntime {
             mocks,
             timer_handles: Mutex::new(Vec::new()),
             secrets: secrets_manager,
+            operator_registry,
+            operator_metrics,
         }))
     }
 
@@ -236,6 +244,14 @@ impl TenantRuntime {
 
     pub fn config(&self) -> &Arc<HostConfig> {
         &self.config
+    }
+
+    pub fn operator_registry(&self) -> &OperatorRegistry {
+        &self.operator_registry
+    }
+
+    pub fn operator_metrics(&self) -> &OperatorMetrics {
+        &self.operator_metrics
     }
 
     pub fn main_pack(&self) -> &Arc<PackRuntime> {
@@ -318,6 +334,13 @@ impl TenantRuntime {
             .context("failed to read secret from manager")?;
         let value = String::from_utf8(bytes).context("secret value is not valid UTF-8")?;
         Ok(value)
+    }
+
+    pub fn pack_for_component(&self, component_ref: &str) -> Option<Arc<PackRuntime>> {
+        self.packs
+            .iter()
+            .find(|pack| pack.contains_component(component_ref))
+            .cloned()
     }
 }
 

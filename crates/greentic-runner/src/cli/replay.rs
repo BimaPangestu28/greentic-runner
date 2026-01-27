@@ -10,7 +10,8 @@ use greentic_runner_host::component_api::node::{
     ExecCtx as ComponentExecCtx, TenantCtx as ComponentTenantCtx,
 };
 use greentic_runner_host::config::{
-    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, StateStorePolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, OperatorPolicy, RateLimits, SecretsPolicy, StateStorePolicy,
+    WebhookPolicy,
 };
 use greentic_runner_host::pack::{ComponentResolution, PackRuntime};
 use greentic_runner_host::secrets::default_manager;
@@ -159,6 +160,7 @@ fn replay_host_config() -> HostConfig {
         env_passthrough: Vec::new(),
         trace: greentic_runner_host::trace::TraceConfig::from_env(),
         validation: greentic_runner_host::validate::ValidationConfig::from_env(),
+        operator_policy: OperatorPolicy::allow_all(),
     }
 }
 

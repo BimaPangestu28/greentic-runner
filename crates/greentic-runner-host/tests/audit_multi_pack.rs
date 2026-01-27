@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use greentic_runner_host::config::{
-    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, StateStorePolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, OperatorPolicy, RateLimits, SecretsPolicy, StateStorePolicy,
+    WebhookPolicy,
 };
 use greentic_runner_host::engine::host::SessionKey;
 use greentic_runner_host::pack::PackRuntime;
@@ -35,6 +36,7 @@ fn host_config(tenant: &str) -> HostConfig {
         env_passthrough: Vec::new(),
         trace: TraceConfig::from_env(),
         validation: ValidationConfig::from_env(),
+        operator_policy: OperatorPolicy::allow_all(),
     }
 }
 

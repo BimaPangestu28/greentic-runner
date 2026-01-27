@@ -17,7 +17,8 @@ use walkdir::WalkDir;
 
 use greentic_runner_host::RunnerWasiPolicy;
 use greentic_runner_host::config::{
-    FlowRetryConfig, HostConfig, RateLimits, SecretsPolicy, StateStorePolicy, WebhookPolicy,
+    FlowRetryConfig, HostConfig, OperatorPolicy, RateLimits, SecretsPolicy, StateStorePolicy,
+    WebhookPolicy,
 };
 use greentic_runner_host::pack::PackRuntime;
 use greentic_runner_host::secrets::default_manager;
@@ -871,6 +872,7 @@ fn build_host(enable_trace: bool) -> Result<RunnerHost> {
         env_passthrough: Vec::new(),
         trace,
         validation: ValidationConfig::from_env(),
+        operator_policy: OperatorPolicy::allow_all(),
     };
 
     let wasi_policy = RunnerWasiPolicy::default().inherit_stdio(false);

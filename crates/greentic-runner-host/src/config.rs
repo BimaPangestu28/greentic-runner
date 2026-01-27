@@ -30,6 +30,7 @@ pub struct HostConfig {
     pub env_passthrough: Vec<String>,
     pub trace: TraceConfig,
     pub validation: ValidationConfig,
+    pub operator_policy: OperatorPolicy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,6 +50,8 @@ pub struct BindingsFile {
     pub mocks: Option<MocksConfig>,
     #[serde(default)]
     pub state_store: StateStorePolicy,
+    #[serde(default)]
+    pub operator: OperatorPolicyConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,6 +75,21 @@ pub struct RateLimits {
 pub struct SecretsPolicy {
     allowed: HashSet<String>,
     allow_all: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct OperatorPolicyConfig {
+    #[serde(default)]
+    pub allowed_providers: Vec<String>,
+    #[serde(default)]
+    pub allowed_ops: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OperatorPolicy {
+    allow_all: bool,
+    allowed_providers: HashSet<String>,
+    allowed_ops: HashMap<String, HashSet<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -162,6 +180,7 @@ impl HostConfig {
             env_passthrough: Vec::new(),
             trace: TraceConfig::from_env(),
             validation: ValidationConfig::from_env(),
+            operator_policy: OperatorPolicy::from_config(bindings.operator.clone()),
         })
     }
 
@@ -183,6 +202,7 @@ impl HostConfig {
             env_passthrough: bindings.env_passthrough,
             trace: TraceConfig::from_env(),
             validation: ValidationConfig::from_env(),
+            operator_policy: OperatorPolicy::allow_all(),
         }
     }
 
@@ -242,6 +262,54 @@ impl SecretsPolicy {
             allowed: HashSet::new(),
             allow_all: true,
         }
+    }
+}
+
+impl OperatorPolicy {
+    pub fn from_config(config: OperatorPolicyConfig) -> Self {
+        let allowed_providers = config.allowed_providers.into_iter().collect::<HashSet<_>>();
+        let allowed_ops = config
+            .allowed_ops
+            .into_iter()
+            .map(|(provider, ops)| (provider, ops.into_iter().collect::<HashSet<_>>()))
+            .collect::<HashMap<_, _>>();
+        let allow_all = allowed_providers.is_empty() && allowed_ops.is_empty();
+        Self {
+            allow_all,
+            allowed_providers,
+            allowed_ops,
+        }
+    }
+
+    pub fn allow_all() -> Self {
+        Self {
+            allow_all: true,
+            allowed_providers: HashSet::new(),
+            allowed_ops: HashMap::new(),
+        }
+    }
+
+    pub fn allows_provider(&self, provider_id: Option<&str>, provider_type: &str) -> bool {
+        if self.allow_all {
+            return true;
+        }
+        provider_id
+            .map(|id| self.allowed_providers.contains(id))
+            .unwrap_or(false)
+            || self.allowed_providers.contains(provider_type)
+    }
+
+    pub fn allows_op(&self, provider_id: Option<&str>, provider_type: &str, op_id: &str) -> bool {
+        if self.allow_all {
+            return true;
+        }
+        if let Some(ops) = provider_id.and_then(|id| self.allowed_ops.get(id)) {
+            return ops.contains(op_id);
+        }
+        if let Some(ops) = self.allowed_ops.get(provider_type) {
+            return ops.contains(op_id);
+        }
+        self.allows_provider(provider_id, provider_type)
     }
 }
 
@@ -318,6 +386,34 @@ impl Default for FlowRetryConfig {
     }
 }
 
+#[cfg(test)]
+mod operator_policy_tests {
+    use super::{OperatorPolicy, OperatorPolicyConfig};
+    use std::collections::HashMap;
+
+    #[test]
+    fn policy_allows_configured_provider_op() {
+        let mut allowed_ops = HashMap::new();
+        allowed_ops.insert("provider.allowed".into(), vec!["op1".into(), "op2".into()]);
+        let config = OperatorPolicyConfig {
+            allowed_providers: vec!["provider.allowed".into()],
+            allowed_ops,
+        };
+        let policy = OperatorPolicy::from_config(config);
+        assert!(policy.allows_provider(Some("provider.allowed"), "provider.allowed"));
+        assert!(policy.allows_op(Some("provider.allowed"), "provider.allowed", "op1"));
+        assert!(!policy.allows_op(Some("provider.allowed"), "provider.allowed", "other"));
+        assert!(!policy.allows_provider(Some("provider.denied"), "provider.denied"));
+    }
+
+    #[test]
+    fn policy_allow_all_defaults_true() {
+        let policy = OperatorPolicy::allow_all();
+        assert!(policy.allows_provider(None, "any"));
+        assert!(policy.allows_op(None, "any", "op"));
+    }
+}
+
 fn default_retry_attempts() -> u32 {
     3
 }
@@ -351,6 +447,7 @@ mod tests {
             env_passthrough: Vec::new(),
             trace: TraceConfig::from_env(),
             validation: ValidationConfig::from_env(),
+            operator_policy: OperatorPolicy::allow_all(),
         }
     }
 

@@ -35,6 +35,8 @@ pub mod fault;
 pub mod gtbind;
 pub mod http;
 pub mod ingress;
+pub mod operator_metrics;
+pub mod operator_registry;
 pub mod pack;
 pub mod provider;
 pub mod provider_core;

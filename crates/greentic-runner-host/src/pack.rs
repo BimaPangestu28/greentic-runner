@@ -1209,6 +1209,10 @@ impl PackRuntime {
             .unwrap_or(false)
     }
 
+    pub fn contains_component(&self, component_ref: &str) -> bool {
+        self.components.contains_key(component_ref)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn load(
         path: impl AsRef<Path>,
@@ -1728,7 +1732,7 @@ impl PackRuntime {
         })
     }
 
-    fn provider_registry(&self) -> Result<ProviderRegistry> {
+    pub(crate) fn provider_registry(&self) -> Result<ProviderRegistry> {
         if let Some(registry) = self.provider_registry.read().clone() {
             return Ok(registry);
         }
@@ -1745,6 +1749,13 @@ impl PackRuntime {
         )?;
         *self.provider_registry.write() = Some(registry.clone());
         Ok(registry)
+    }
+
+    pub(crate) fn provider_registry_optional(&self) -> Result<Option<ProviderRegistry>> {
+        if self.manifest.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(self.provider_registry()?))
     }
 
     pub fn load_flow(&self, flow_id: &str) -> Result<Flow> {
