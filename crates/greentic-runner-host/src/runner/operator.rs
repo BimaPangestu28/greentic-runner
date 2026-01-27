@@ -12,6 +12,7 @@ use tracing::{Level, span};
 
 use crate::component_api::node::{ExecCtx as ComponentExecCtx, TenantCtx as ComponentTenantCtx};
 use crate::operator_registry::OperatorResolveError;
+use crate::provider::ProviderBinding;
 use crate::routing::TenantRuntimeHandle;
 use crate::runtime::TenantRuntime;
 
@@ -123,6 +124,7 @@ pub enum OperatorErrorCode {
     OpNotFound,
     ProviderNotFound,
     TenantNotAllowed,
+    InvalidRequest,
     CborDecode,
     TypeMismatch,
     ComponentLoad,
@@ -138,6 +140,7 @@ impl OperatorErrorCode {
             OperatorErrorCode::OpNotFound => "op not found",
             OperatorErrorCode::ProviderNotFound => "provider not found",
             OperatorErrorCode::TenantNotAllowed => "tenant not allowed",
+            OperatorErrorCode::InvalidRequest => "invalid operator request",
             OperatorErrorCode::CborDecode => "failed to decode CBOR payload",
             OperatorErrorCode::TypeMismatch => "type mismatch between CBOR and operation",
             OperatorErrorCode::ComponentLoad => "failed to load component",
@@ -149,40 +152,31 @@ impl OperatorErrorCode {
     }
 }
 
-/// Axum handler stub for `/operator/op/invoke`.
-pub async fn invoke(
-    TenantRuntimeHandle { tenant, runtime }: TenantRuntimeHandle,
-    _headers: HeaderMap,
-    body: Body,
-) -> Result<Response<Body>, Response<Body>> {
-    let bytes = match to_bytes(body, OPERATOR_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            return Err(bad_request(format!("failed to read body: {err}")));
-        }
-    };
-
-    let request = match OperatorRequest::from_cbor(&bytes) {
-        Ok(request) => request,
-        Err(err) => {
-            return Err(bad_request(format!("failed to decode request CBOR: {err}")));
-        }
-    };
-
+/// Invoke an operator request without assuming HTTP transport.
+pub async fn invoke_operator(
+    runtime: &TenantRuntime,
+    request: OperatorRequest,
+) -> OperatorResponse {
     if let Some(request_tenant) = request.tenant_id.as_deref()
-        && request_tenant != tenant
+        && request_tenant != runtime.tenant()
     {
-        return Err(bad_request(format!(
-            "tenant mismatch: routing resolved `{tenant}` but request wants `{request_tenant}`"
-        )));
+        return OperatorResponse::error(
+            OperatorErrorCode::TenantNotAllowed,
+            format!(
+                "tenant mismatch: routing resolved `{}` but request wants `{request_tenant}`",
+                runtime.tenant(),
+            ),
+        );
     }
 
     if request.provider_id.is_none() && request.provider_type.is_none() {
-        return Err(bad_request(
-            "operator invoke requires provider_id or provider_type".into(),
-        ));
+        return OperatorResponse::error(
+            OperatorErrorCode::InvalidRequest,
+            "operator invoke requires provider_id or provider_type".to_string(),
+        );
     }
 
+    let tenant = runtime.tenant();
     let root_span = span!(
         Level::INFO,
         "operator.invoke",
@@ -229,14 +223,14 @@ pub async fn invoke(
                     .resolve_errors
                     .fetch_add(1, Ordering::Relaxed);
                 let response = OperatorResponse::error(code, message);
-                return build_cbor_response(response);
+                return response;
             }
         };
     drop(_resolve_guard);
 
     let policy = &runtime.config().operator_policy;
     if !policy.allows_provider(provider_id, binding.provider_type.as_str()) {
-        let response = OperatorResponse::error(
+        return OperatorResponse::error(
             OperatorErrorCode::PolicyDenied,
             format!(
                 "provider `{}` not allowed for tenant {}",
@@ -247,10 +241,9 @@ pub async fn invoke(
                 runtime.config().tenant
             ),
         );
-        return build_cbor_response(response);
     }
     if !policy.allows_op(provider_id, binding.provider_type.as_str(), &binding.op_id) {
-        let response = OperatorResponse::error(
+        return OperatorResponse::error(
             OperatorErrorCode::PolicyDenied,
             format!(
                 "op `{}` is not permitted for provider `{}` on tenant {}",
@@ -262,7 +255,6 @@ pub async fn invoke(
                 runtime.config().tenant
             ),
         );
-        return build_cbor_response(response);
     }
 
     if let Some(req_pack) = request.pack_id.as_deref() {
@@ -272,20 +264,19 @@ pub async fn invoke(
             .next()
             .unwrap_or(&binding.pack_ref);
         if binding_pack != req_pack {
-            let response = OperatorResponse::error(
+            return OperatorResponse::error(
                 OperatorErrorCode::PolicyDenied,
                 format!(
                     "request bound to pack `{req_pack}`, but op lives in `{}`",
                     binding.pack_ref
                 ),
             );
-            return build_cbor_response(response);
         }
     }
 
-    let attachments = match resolve_attachments(&request.payload, &runtime) {
+    let attachments = match resolve_attachments(&request.payload, runtime) {
         Ok(map) => map,
-        Err(response) => return build_cbor_response(response),
+        Err(response) => return response,
     };
 
     let decode_span = span!(Level::DEBUG, "decode_cbor");
@@ -297,8 +288,7 @@ pub async fn invoke(
                 .operator_metrics()
                 .cbor_decode_errors
                 .fetch_add(1, Ordering::Relaxed);
-            let response = OperatorResponse::error(OperatorErrorCode::CborDecode, format!("{err}"));
-            return build_cbor_response(response);
+            return OperatorResponse::error(OperatorErrorCode::CborDecode, format!("{err}"));
         }
     };
     drop(_decode_guard);
@@ -308,11 +298,10 @@ pub async fn invoke(
     let input_json = match serde_json::to_string(&input_value) {
         Ok(json) => json,
         Err(err) => {
-            let response = OperatorResponse::error(
+            return OperatorResponse::error(
                 OperatorErrorCode::TypeMismatch,
                 format!("failed to serialise input JSON: {err}"),
             );
-            return build_cbor_response(response);
         }
     };
 
@@ -320,42 +309,69 @@ pub async fn invoke(
     let pack = match runtime.pack_for_component(component_ref) {
         Some(pack) => pack,
         None => {
-            let response = OperatorResponse::error(
+            return OperatorResponse::error(
                 OperatorErrorCode::ComponentLoad,
                 format!("component `{}` not found in tenant packs", component_ref),
             );
-            return build_cbor_response(response);
         }
     };
 
-    let exec_ctx = build_exec_ctx(&request, &runtime);
+    let exec_ctx = build_exec_ctx(&request, runtime);
     runtime
         .operator_metrics()
         .invoke_attempts
         .fetch_add(1, Ordering::Relaxed);
     let invoke_span = span!(Level::INFO, "invoke_component", component = %component_ref);
     let _invoke_guard = invoke_span.enter();
-    let result = match pack
-        .invoke_component(
-            component_ref,
-            exec_ctx,
-            &binding.op_id,
-            None,
-            input_json.clone(),
-        )
-        .await
-    {
-        Ok(value) => value,
-        Err(err) => {
-            let response = OperatorResponse::error(
-                OperatorErrorCode::HostFailure,
-                format!("component invoke failed: {err}"),
-            );
-            runtime
-                .operator_metrics()
-                .invoke_errors
-                .fetch_add(1, Ordering::Relaxed);
-            return build_cbor_response(response);
+    let result = if binding.runtime.world.starts_with("greentic:provider-core") {
+        let input_bytes = input_json.clone().into_bytes();
+        let provider_binding = ProviderBinding {
+            provider_id: binding.provider_id.clone(),
+            provider_type: binding.provider_type.clone(),
+            component_ref: binding.runtime.component_ref.clone(),
+            export: binding.runtime.export.clone(),
+            world: binding.runtime.world.clone(),
+            config_json: None,
+            pack_ref: Some(binding.pack_ref.clone()),
+        };
+        match pack
+            .invoke_provider(&provider_binding, exec_ctx, &binding.op_id, input_bytes)
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                runtime
+                    .operator_metrics()
+                    .invoke_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                return OperatorResponse::error(
+                    OperatorErrorCode::HostFailure,
+                    format!("provider invoke failed: {err}"),
+                );
+            }
+        }
+    } else {
+        match pack
+            .invoke_component(
+                component_ref,
+                exec_ctx,
+                &binding.op_id,
+                None,
+                input_json.clone(),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                runtime
+                    .operator_metrics()
+                    .invoke_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                return OperatorResponse::error(
+                    OperatorErrorCode::HostFailure,
+                    format!("component invoke failed: {err}"),
+                );
+            }
         }
     };
     drop(_invoke_guard);
@@ -365,16 +381,48 @@ pub async fn invoke(
     let output_bytes = match serde_cbor::to_vec(&result) {
         Ok(bytes) => bytes,
         Err(err) => {
-            let response = OperatorResponse::error(
+            return OperatorResponse::error(
                 OperatorErrorCode::HostFailure,
                 format!("failed to encode CBOR output: {err}"),
             );
-            return build_cbor_response(response);
         }
     };
     drop(_encode_guard);
 
-    let response = OperatorResponse::ok(output_bytes);
+    OperatorResponse::ok(output_bytes)
+}
+
+/// Convenience helper that takes CBOR bytes and reuses `invoke_operator`.
+pub async fn invoke_operator_cbor(
+    runtime: &TenantRuntime,
+    req_cbor: &[u8],
+) -> Result<Vec<u8>, serde_cbor::Error> {
+    let request = OperatorRequest::from_cbor(req_cbor)?;
+    let response = invoke_operator(runtime, request).await;
+    response.to_cbor()
+}
+
+/// Axum handler stub for `/operator/op/invoke`.
+pub async fn invoke(
+    TenantRuntimeHandle { runtime, .. }: TenantRuntimeHandle,
+    _headers: HeaderMap,
+    body: Body,
+) -> Result<Response<Body>, Response<Body>> {
+    let bytes = match to_bytes(body, OPERATOR_BODY_LIMIT).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return Err(bad_request(format!("failed to read body: {err}")));
+        }
+    };
+
+    let request = match OperatorRequest::from_cbor(&bytes) {
+        Ok(request) => request,
+        Err(err) => {
+            return Err(bad_request(format!("failed to decode request CBOR: {err}")));
+        }
+    };
+
+    let response = invoke_operator(&runtime, request).await;
     build_cbor_response(response)
 }
 
