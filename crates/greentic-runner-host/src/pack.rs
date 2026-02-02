@@ -12,7 +12,10 @@ use crate::component_api::{
 };
 use crate::oauth::{OAuthBrokerConfig, OAuthBrokerHost, OAuthHostContext};
 use crate::provider::{ProviderBinding, ProviderRegistry};
-use crate::provider_core::SchemaCorePre as ProviderComponentPre;
+use crate::provider_core::{
+    schema_core::SchemaCorePre as LegacySchemaCorePre,
+    schema_core_schema::SchemaCorePre as SchemaSchemaCorePre,
+};
 use crate::provider_core_only;
 use crate::runtime_wasmtime::{Component, Engine, InstancePre, Linker, ResourceTable};
 use anyhow::{Context, Result, anyhow, bail};
@@ -34,6 +37,7 @@ use greentic_interfaces_wasmtime::host_helpers::v1::{
     },
 };
 use greentic_interfaces_wasmtime::http_client_client_v1_0::greentic::interfaces_types::types::Impersonation as ImpersonationV1_0;
+use greentic_interfaces_wasmtime::http_client_client_v1_1::greentic::http::http_client as http_client_client_alias;
 use greentic_interfaces_wasmtime::http_client_client_v1_1::greentic::interfaces_types::types::Impersonation as ImpersonationV1_1;
 use greentic_pack::builder as legacy_pack;
 use greentic_types::flow::FlowHasher;
@@ -44,6 +48,7 @@ use greentic_types::{
     TeamId, TelemetryHints, TenantCtx as TypesTenantCtx, TenantId, UserId, decode_pack_manifest,
     pack_manifest::ExtensionInline,
 };
+use host_v1::http_client as host_http_client;
 use host_v1::http_client::{
     HttpClientError, HttpClientErrorV1_1, HttpClientHost, HttpClientHostV1_1,
     Request as HttpRequest, RequestOptionsV1_1 as HttpRequestOptionsV1_1,
@@ -1154,7 +1159,113 @@ pub fn register_all(linker: &mut Linker<ComponentState>, allow_state_store: bool
             secrets_store: None,
         },
     )?;
+    add_http_client_client_world_aliases(linker)?;
     Ok(())
+}
+
+fn add_http_client_client_world_aliases(linker: &mut Linker<ComponentState>) -> Result<()> {
+    let mut inst_v1_1 = linker.instance("greentic:http/client@1.1.0")?;
+    inst_v1_1.func_wrap(
+        "send",
+        move |mut caller: StoreContextMut<'_, ComponentState>,
+              (req, opts, ctx): (
+            http_client_client_alias::Request,
+            Option<http_client_client_alias::RequestOptions>,
+            Option<http_client_client_alias::TenantCtx>,
+        )| {
+            let host = caller.data_mut().host_mut();
+            let result = HttpClientHostV1_1::send(
+                host,
+                alias_request_to_host(req),
+                opts.map(alias_request_options_to_host),
+                ctx.map(alias_tenant_ctx_to_host),
+            );
+            Ok((match result {
+                Ok(resp) => Ok(alias_response_from_host(resp)),
+                Err(err) => Err(alias_error_from_host(err)),
+            },))
+        },
+    )?;
+    let mut inst_v1_0 = linker.instance("greentic:http/client@1.0.0")?;
+    inst_v1_0.func_wrap(
+        "send",
+        move |mut caller: StoreContextMut<'_, ComponentState>,
+              (req, ctx): (
+            host_http_client::Request,
+            Option<host_http_client::TenantCtx>,
+        )| {
+            let host = caller.data_mut().host_mut();
+            let result = HttpClientHost::send(host, req, ctx);
+            Ok((result,))
+        },
+    )?;
+    Ok(())
+}
+
+fn alias_request_to_host(req: http_client_client_alias::Request) -> host_http_client::RequestV1_1 {
+    host_http_client::RequestV1_1 {
+        method: req.method,
+        url: req.url,
+        headers: req.headers,
+        body: req.body,
+    }
+}
+
+fn alias_request_options_to_host(
+    opts: http_client_client_alias::RequestOptions,
+) -> host_http_client::RequestOptionsV1_1 {
+    host_http_client::RequestOptionsV1_1 {
+        timeout_ms: opts.timeout_ms,
+        allow_insecure: opts.allow_insecure,
+        follow_redirects: opts.follow_redirects,
+    }
+}
+
+fn alias_tenant_ctx_to_host(
+    ctx: http_client_client_alias::TenantCtx,
+) -> host_http_client::TenantCtxV1_1 {
+    host_http_client::TenantCtxV1_1 {
+        env: ctx.env,
+        tenant: ctx.tenant,
+        tenant_id: ctx.tenant_id,
+        team: ctx.team,
+        team_id: ctx.team_id,
+        user: ctx.user,
+        user_id: ctx.user_id,
+        trace_id: ctx.trace_id,
+        correlation_id: ctx.correlation_id,
+        attributes: ctx.attributes,
+        session_id: ctx.session_id,
+        flow_id: ctx.flow_id,
+        node_id: ctx.node_id,
+        provider_id: ctx.provider_id,
+        deadline_ms: ctx.deadline_ms,
+        attempt: ctx.attempt,
+        idempotency_key: ctx.idempotency_key,
+        impersonation: ctx.impersonation.map(|imp| ImpersonationV1_1 {
+            actor_id: imp.actor_id,
+            reason: imp.reason,
+        }),
+    }
+}
+
+fn alias_response_from_host(
+    resp: host_http_client::ResponseV1_1,
+) -> http_client_client_alias::Response {
+    http_client_client_alias::Response {
+        status: resp.status,
+        headers: resp.headers,
+        body: resp.body,
+    }
+}
+
+fn alias_error_from_host(
+    err: host_http_client::HttpClientErrorV1_1,
+) -> http_client_client_alias::HostError {
+    http_client_client_alias::HostError {
+        code: err.code,
+        message: err.message,
+    }
 }
 
 impl OAuthHostContext for ComponentState {
@@ -1699,15 +1810,13 @@ impl PackRuntime {
         let input_owned = input_json;
         let op_owned = op.to_string();
         let ctx_owned = ctx;
+        let world = binding.world.clone();
 
         run_on_wasi_thread("provider.invoke", move || {
             let mut linker = Linker::new(&engine);
             register_all(&mut linker, allow_state_store)?;
             add_component_control_to_linker(&mut linker)?;
-            let pre_instance = linker.instantiate_pre(component.as_ref())?;
-            let pre: ProviderComponentPre<ComponentState> =
-                ProviderComponentPre::new(pre_instance)?;
-
+            let mut pre_instance = Some(linker.instantiate_pre(component.as_ref())?);
             let host_state = HostState::new(
                 pack_id.clone(),
                 config,
@@ -1723,11 +1832,27 @@ impl PackRuntime {
             )?;
             let store_state = ComponentState::new(host_state, wasi_policy)?;
             let mut store = wasmtime::Store::new(&engine, store_state);
-            let bindings: crate::provider_core::SchemaCore =
-                block_on(async { pre.instantiate_async(&mut store).await })?;
-            let provider = bindings.greentic_provider_core_schema_core_api();
-
-            let result = provider.call_invoke(&mut store, &op_owned, &input_owned)?;
+            let use_schema_core =
+                world.contains("provider-schema-core") || world.contains("provider/schema-core");
+            let result = if use_schema_core {
+                let pre_instance = pre_instance
+                    .take()
+                    .ok_or_else(|| anyhow!("provider pre_instance already consumed"))?;
+                let pre: SchemaSchemaCorePre<ComponentState> =
+                    SchemaSchemaCorePre::new(pre_instance)?;
+                let bindings = block_on(async { pre.instantiate_async(&mut store).await })?;
+                let provider = bindings.greentic_provider_schema_core_schema_core_api();
+                provider.call_invoke(&mut store, &op_owned, &input_owned)?
+            } else {
+                let pre_instance = pre_instance
+                    .take()
+                    .ok_or_else(|| anyhow!("provider pre_instance already consumed"))?;
+                let pre: LegacySchemaCorePre<ComponentState> =
+                    LegacySchemaCorePre::new(pre_instance)?;
+                let bindings = block_on(async { pre.instantiate_async(&mut store).await })?;
+                let provider = bindings.greentic_provider_core_schema_core_api();
+                provider.call_invoke(&mut store, &op_owned, &input_owned)?
+            };
             deserialize_json_bytes(result)
         })
     }

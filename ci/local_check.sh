@@ -4,11 +4,18 @@ set -euo pipefail
 : "${CI:=0}"
 : "${RUN_HOST:=never}"
 
-echo "==> Local CI mirror (greentic-runner)"
+RUST_TOOLCHAIN_VERSION="1.90.0"
+echo "==> Local CI mirror (greentic-runner, rustc ${RUST_TOOLCHAIN_VERSION})"
 export CARGO_TERM_COLOR=always
 export RUSTFLAGS="-Dwarnings"
 export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 export GREENTIC_PROVIDER_CORE_ONLY="${GREENTIC_PROVIDER_CORE_ONLY:-1}"
+
+if [[ -z "${RUSTUP_TOOLCHAIN:-}" ]]; then
+  export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN_VERSION"
+elif [[ "$RUSTUP_TOOLCHAIN" != "${RUST_TOOLCHAIN_VERSION}"* ]]; then
+  echo "warning: RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN differs from expected $RUST_TOOLCHAIN_VERSION" >&2
+fi
 
 # If you *really* want to prefetch in CI, do it unconditionally here:
 # echo "==> Prefetching dependencies (cargo fetch --locked)"
