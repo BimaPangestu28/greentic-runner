@@ -1,1 +1,0 @@
-/projects/ai/greentic-ng/greentic-runner/tests/fixtures/runner-components/target-test/wasm32-wasip2/release/templating_handlebars.wasm: /projects/ai/greentic-ng/greentic-runner/tests/fixtures/runner-components/templating_handlebars/src/lib.rs

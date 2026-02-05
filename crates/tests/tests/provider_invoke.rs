@@ -543,7 +543,10 @@ fn build_component_exec_flow(flow_id: &str, message: &str) -> Result<Flow> {
                 operation: Some("process".into()),
             },
             input: InputMapping {
-                mapping: json!({ "input": { "message": message } }),
+                mapping: json!({
+                    "payload": { "message": message },
+                    "metadata": { "__return_envelope": true }
+                }),
             },
             output: OutputMapping {
                 mapping: Value::Null,

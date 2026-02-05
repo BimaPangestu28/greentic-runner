@@ -3,6 +3,7 @@
 .DS_Store
 # Fixture build outputs
 tests/fixtures/**/target/
+tests/fixtures/**/target-test/
 tests/fixtures/packs/runner-components/components/
 tests/fixtures/packs/runner-components/manifest.cbor
 .greentic
@@ -10,3 +11,4 @@ examples/packs/*.gtpack
 !examples/packs/demo.gtpack
 .packs/
 tests/assets/provider-core-dummy/target/
+crates/tests/trace.json

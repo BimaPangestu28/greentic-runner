@@ -469,7 +469,10 @@ nodes:
       component: qa.process
       operation: process
       input:
-        text: "hello"
+        payload:
+          text: "hello"
+        metadata:
+          __return_envelope: true
     routing:
       - out: true
 "#;
@@ -567,21 +570,21 @@ timers: []\n",
                     "node_id": "spoof.node",
                     "op": "process",
                     "payload": { "message": "from envelope" },
-                    "metadata": { "source": "envelope" }
+                    "metadata": { "source": "envelope", "__return_envelope": true }
                 }
             }),
             expected_payload: json!({ "message": "from envelope" }),
-            expected_metadata: json!({ "source": "envelope" }),
+            expected_metadata: json!({ "source": "envelope", "__return_envelope": true }),
         },
         InvocationCase {
             suffix: "partial",
             input: json!({
                 "op": "process",
                 "payload": { "message": "partial" },
-                "metadata": { "source": "partial" }
+                "metadata": { "source": "partial", "__return_envelope": true }
             }),
             expected_payload: json!({ "message": "partial" }),
-            expected_metadata: json!({ "source": "partial" }),
+            expected_metadata: json!({ "source": "partial", "__return_envelope": true }),
         },
     ];
 
@@ -802,7 +805,10 @@ fn runtime_extension_flow_overrides_manifest_flow() -> Result<()> {
             "exec": {
                 "component_id": "qa.process",
                 "operation_name": "process",
-                "operation_payload": { "message": "resolved" },
+                "operation_payload": {
+                    "payload": { "message": "resolved" },
+                    "metadata": { "__return_envelope": true }
+                },
                 "routing": "end"
             }
         }

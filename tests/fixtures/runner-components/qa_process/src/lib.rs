@@ -97,6 +97,9 @@ impl NodeGuest for Qa {
             });
         }
         let parsed: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
+        if should_return_envelope(&parsed) {
+            return InvokeResult::Ok(input);
+        }
         let payload = extract_payload(&parsed);
         InvokeResult::Ok(serde_json::to_string(&payload).unwrap())
     }
@@ -121,6 +124,29 @@ fn extract_payload(value: &Value) -> Value {
         }
     }
     value.clone()
+}
+
+fn should_return_envelope(value: &Value) -> bool {
+    let Value::Object(map) = value else {
+        return false;
+    };
+    let Some(Value::Array(bytes)) = map.get("metadata") else {
+        return false;
+    };
+    let maybe_vec: Option<Vec<u8>> = bytes
+        .iter()
+        .map(|entry| entry.as_u64().map(|num| num as u8))
+        .collect();
+    let Some(vec) = maybe_vec else {
+        return false;
+    };
+    let Ok(decoded) = serde_json::from_slice::<Value>(&vec) else {
+        return false;
+    };
+    decoded
+        .get("__return_envelope")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 export!(Qa);
