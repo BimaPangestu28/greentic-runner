@@ -7,6 +7,15 @@ on:
     branches:
       - master
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_heavy_wasm:
+        description: "Run heavy WASM fixture tests"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "0 3 * * *"
 
 jobs:
   check:
@@ -66,3 +75,28 @@ jobs:
           name: snapshot-artifacts-${{ matrix.step }}
           path: target/snapshot-artifacts
           if-no-files-found: ignore
+
+  heavy_wasm:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_heavy_wasm == true)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: 1.90.0
+          targets: wasm32-wasip2
+
+      - name: Install wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2 --toolchain 1.90.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Run heavy WASM fixture tests
+        env:
+          GREENTIC_HEAVY_WASM: "1"
+        run: |
+          cargo test -p greentic-runner-host --test component_v06_introspection --features component-v0-6-introspection --locked
+          cargo test -p greentic-runner --test contract_cli contract_pack_rejects_mismatched_artifact --locked

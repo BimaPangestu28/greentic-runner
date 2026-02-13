@@ -6,12 +6,16 @@ pub mod adapt_webchat;
 pub mod adapt_webex;
 pub mod adapt_webhook;
 pub mod adapt_whatsapp;
+pub mod contract_cache;
+pub mod contract_introspection;
 pub mod engine;
 pub mod flow_adapter;
+pub mod i18n;
 pub mod ingress_util;
 pub mod invocation;
 pub mod mocks;
 pub mod operator;
+pub mod schema_validator;
 pub mod templating;
 
 use std::net::SocketAddr;

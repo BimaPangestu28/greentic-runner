@@ -1,0 +1,31 @@
+{
+  "operations": [
+    {
+      "id": "run",
+      "input": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "message": { "type": "string" }
+          },
+          "required": ["message"]
+        }
+      },
+      "output": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" }
+          },
+          "required": ["ok"]
+        }
+      }
+    }
+  ],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "count": { "type": "integer" }
+    }
+  }
+}

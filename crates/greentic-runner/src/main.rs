@@ -4,17 +4,26 @@ use greentic_config::{ConfigFileFormat, ConfigLayer, ConfigResolver};
 use greentic_runner_host::cache::{
     ArtifactKey, CacheConfig, CacheManager, CpuPolicy, EngineProfile,
 };
+use greentic_runner_host::config::{
+    FlowRetryConfig, HostConfig, OperatorPolicy, RateLimits, SecretsPolicy, StateStorePolicy,
+    WebhookPolicy,
+};
+use greentic_runner_host::pack::PackRuntime;
+use greentic_runner_host::secrets::default_manager;
+use greentic_runner_host::storage::{new_session_store, new_state_store};
 use greentic_runner_host::trace::{TraceConfig, TraceMode};
 use greentic_runner_host::validate::{ValidationConfig, ValidationMode};
-use greentic_runner_host::{RunnerConfig, run as run_host};
+use greentic_runner_host::{RunnerConfig, RunnerWasiPolicy, run as run_host};
 use greentic_types::ComponentSourceRef;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs as async_fs;
 
 use anyhow::{Context, Result, bail};
 use greentic_distributor_client::dist::{DistClient, DistOptions};
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Parser)]
 #[command(name = "greentic-runner")]
@@ -32,6 +41,42 @@ enum Command {
     Cache(CacheCommand),
     Replay(cli::replay::ReplayArgs),
     Conformance(cli::conformance::ConformanceArgs),
+    Contract(ContractArgs),
+}
+
+#[derive(Debug, Parser)]
+struct ContractArgs {
+    /// Pack or component path for authoritative WASM describe()
+    #[arg(long, value_name = "PATH")]
+    pack: Option<PathBuf>,
+
+    /// Component id/reference from the pack manifest
+    #[arg(long, value_name = "ID")]
+    component: Option<String>,
+
+    /// Operation id (defaults to run)
+    #[arg(long, default_value = "run")]
+    operation: String,
+
+    /// Read describe artifact from file (CBOR or JSON)
+    #[arg(long = "describe", alias = "contract", value_name = "PATH")]
+    describe_path: Option<PathBuf>,
+
+    /// Write describe artifact as canonical CBOR
+    #[arg(long, value_name = "PATH")]
+    emit_describe: Option<PathBuf>,
+
+    /// Print resolved contract as stable JSON
+    #[arg(long)]
+    print_contract: bool,
+
+    /// Allow unverified artifact-only inspection
+    #[arg(long)]
+    no_verify: bool,
+
+    /// Explicit non-execution mode gate for artifact-only inspection
+    #[arg(long)]
+    validate_only: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -114,6 +159,10 @@ struct RunArgs {
     /// Invocation envelope validation mode
     #[arg(long = "validation", value_enum)]
     validation: Option<ValidationArg>,
+
+    /// Preferred locale override (highest precedence for diagnostics)
+    #[arg(long = "locale", value_name = "LOCALE")]
+    locale: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -136,6 +185,59 @@ enum ValidationArg {
     Error,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ContractReport {
+    selected_operation: String,
+    input_schema: Value,
+    output_schema: Value,
+    config_schema: Value,
+    describe_hash: String,
+    schema_hash: String,
+    source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TypedDescribe {
+    #[serde(default)]
+    operations: Vec<TypedOperation>,
+    #[serde(default)]
+    config_schema: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct TypedSchemaSide {
+    #[serde(default)]
+    schema: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TypedOperation {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    input: TypedSchemaSide,
+    #[serde(default)]
+    output: TypedSchemaSide,
+    #[serde(default)]
+    input_schema: Option<Value>,
+    #[serde(default)]
+    output_schema: Option<Value>,
+}
+
+#[derive(Serialize)]
+struct ContractDescribeHashMaterial<'a> {
+    describe: &'a Value,
+}
+
+#[derive(Serialize)]
+struct ContractSchemaHashMaterial<'a> {
+    input_schema: &'a Value,
+    output_schema: &'a Value,
+    config_schema: &'a Value,
+}
+
 #[greentic_types::telemetry::main(service_name = "greentic-runner")]
 async fn main() {
     let cli = Cli::parse();
@@ -152,11 +254,18 @@ async fn main() {
 }
 
 async fn run_with_cli(cli: Cli) -> anyhow::Result<()> {
+    if let Some(locale) = cli.run.locale.as_deref() {
+        // SAFETY: process-local override for locale selection precedence.
+        unsafe {
+            std::env::set_var("GREENTIC_LOCALE_CLI", locale);
+        }
+    }
     if let Some(command) = cli.command {
         return match command {
             Command::Cache(cmd) => run_cache(cmd).await,
             Command::Replay(args) => cli::replay::run(args).await,
             Command::Conformance(args) => cli::conformance::run(args).await,
+            Command::Contract(args) => run_contract(args).await,
         };
     }
     let run = cli.run;
@@ -489,5 +598,309 @@ fn normalize_digest(digest: &str) -> String {
         digest.to_string()
     } else {
         format!("sha256:{digest}")
+    }
+}
+
+async fn run_contract(args: ContractArgs) -> Result<()> {
+    let operation = normalize_operation_id(&args.operation);
+    let artifact_payload = if let Some(path) = args.describe_path.as_ref() {
+        Some(load_describe_artifact(path)?)
+    } else {
+        None
+    };
+
+    if args.pack.is_none() && artifact_payload.is_some() && (!args.no_verify || !args.validate_only)
+    {
+        bail!(
+            "artifact-only contract inspection requires explicit --no-verify and --validate-only"
+        );
+    }
+    if args.pack.is_none() && (args.component.is_some() || args.emit_describe.is_some()) {
+        bail!("--pack is required for --component and --emit-describe");
+    }
+    if args.pack.is_none() && artifact_payload.is_none() {
+        bail!("provide either --pack (authoritative WASM) or --describe/--contract artifact path");
+    }
+
+    let report = if let Some(pack_path) = args.pack.as_ref() {
+        let component = args
+            .component
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("--component is required when --pack is provided"))?;
+        let pack = load_pack_runtime_for_contract(pack_path).await?;
+        let manifest = pack.component_manifest(component).ok_or_else(|| {
+            anyhow::anyhow!(
+                "component `{component}` not found in pack {}",
+                pack_path.display()
+            )
+        })?;
+        if !manifest.world.contains("greentic:component@0.6.0") {
+            bail!(
+                "component `{}` world `{}` is not greentic:component@0.6.0",
+                component,
+                manifest.world
+            );
+        }
+
+        let wasm_describe_value = pack
+            .describe_component_contract_v0_6(component)?
+            .ok_or_else(|| anyhow::anyhow!("component `{component}` has no 0.6 describe()"))?;
+        let wasm_describe = parse_typed_describe_from_value(
+            wasm_describe_value,
+            "authoritative WASM describe payload",
+        )?;
+
+        if let Some(path) = args.emit_describe.as_ref() {
+            write_canonical_describe(path, &wasm_describe)?;
+        }
+
+        if let Some(artifact) = artifact_payload.as_ref() {
+            if args.no_verify {
+                eprintln!(
+                    "warning: artifact provided with --no-verify; using WASM describe() as authoritative"
+                );
+            } else {
+                let artifact_hash = describe_hash(artifact)?;
+                let wasm_hash = describe_hash(&wasm_describe)?;
+                if artifact_hash != wasm_hash {
+                    bail!(
+                        "artifact describe does not match authoritative WASM describe(); rerun with --no-verify only for validate-only inspection"
+                    );
+                }
+            }
+        }
+
+        contract_from_describe(&operation, &wasm_describe, "wasm.describe".to_string())?
+    } else {
+        let describe =
+            artifact_payload.ok_or_else(|| anyhow::anyhow!("missing describe artifact payload"))?;
+        contract_from_describe(&operation, &describe, "artifact.unverified".to_string())?
+    };
+
+    if args.print_contract || args.pack.is_none() {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if let Some(path) = args.emit_describe.as_ref() {
+        println!("wrote describe artifact to {}", path.display());
+    }
+    Ok(())
+}
+
+async fn load_pack_runtime_for_contract(path: &Path) -> Result<PackRuntime> {
+    let config = Arc::new(HostConfig {
+        tenant: "contract".to_string(),
+        bindings_path: PathBuf::from("<contract>"),
+        flow_type_bindings: std::collections::HashMap::new(),
+        rate_limits: RateLimits::default(),
+        retry: FlowRetryConfig::default(),
+        http_enabled: false,
+        secrets_policy: SecretsPolicy::allow_all(),
+        state_store_policy: StateStorePolicy::default(),
+        webhook_policy: WebhookPolicy::default(),
+        timers: Vec::new(),
+        oauth: None,
+        mocks: None,
+        pack_bindings: Vec::new(),
+        env_passthrough: Vec::new(),
+        trace: TraceConfig::from_env(),
+        validation: ValidationConfig::from_env(),
+        operator_policy: OperatorPolicy::allow_all(),
+    });
+    PackRuntime::load(
+        path,
+        config,
+        None,
+        Some(path),
+        Some(new_session_store()),
+        Some(new_state_store()),
+        Arc::new(RunnerWasiPolicy::new()),
+        default_manager()?,
+        None,
+        false,
+        greentic_runner_host::pack::ComponentResolution::default(),
+    )
+    .await
+}
+
+fn load_describe_artifact(path: &Path) -> Result<TypedDescribe> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if bytes.is_empty() {
+        return Ok(TypedDescribe {
+            operations: Vec::new(),
+            config_schema: Value::Null,
+        });
+    }
+    if let Ok(value) = serde_cbor::from_slice::<Value>(&bytes) {
+        return parse_typed_describe_from_value(value, &format!("artifact {}", path.display()));
+    }
+    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+        return parse_typed_describe_from_value(value, &format!("artifact {}", path.display()));
+    }
+    if let Ok(text) = String::from_utf8(bytes)
+        && let Ok(value) = serde_json::from_str::<Value>(&text)
+    {
+        return parse_typed_describe_from_value(value, &format!("artifact {}", path.display()));
+    }
+    bail!(
+        "unsupported describe artifact encoding in {}; expected CBOR or JSON",
+        path.display()
+    )
+}
+
+fn write_canonical_describe(path: &Path, value: &TypedDescribe) -> Result<()> {
+    let canonical = canonical_describe_value(value)?;
+    let bytes = serde_cbor::ser::to_vec_packed(&canonical)?;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn contract_from_describe(
+    operation: &str,
+    payload: &TypedDescribe,
+    source: String,
+) -> Result<ContractReport> {
+    let selected_operation = select_operation_from_describe(payload, operation)
+        .ok_or_else(|| anyhow::anyhow!("operation `{operation}` not found in describe payload"))?;
+    let selected_operation_entry = payload
+        .operations
+        .iter()
+        .find(|entry| operation_name(entry) == Some(selected_operation.as_str()));
+    let input_schema = selected_operation_entry
+        .map(TypedOperation::input_schema_value)
+        .unwrap_or(Value::Null);
+    let output_schema = selected_operation_entry
+        .map(TypedOperation::output_schema_value)
+        .unwrap_or(Value::Null);
+    let config_schema = canonicalize_json(payload.config_schema.clone());
+
+    let describe_hash = describe_hash(payload)?;
+
+    let schema_material = ContractSchemaHashMaterial {
+        input_schema: &input_schema,
+        output_schema: &output_schema,
+        config_schema: &config_schema,
+    };
+    let schema_hash = sha256_prefixed(&serde_cbor::to_vec(&schema_material)?);
+
+    Ok(ContractReport {
+        selected_operation,
+        input_schema,
+        output_schema,
+        config_schema,
+        describe_hash,
+        schema_hash,
+        source,
+    })
+}
+
+fn select_operation_from_describe(
+    payload: &TypedDescribe,
+    requested_operation: &str,
+) -> Option<String> {
+    let ops = &payload.operations;
+    let requested = ops
+        .iter()
+        .find_map(operation_name)
+        .filter(|name| *name == requested_operation)
+        .map(ToString::to_string);
+    if requested.is_some() {
+        return requested;
+    }
+    ops.iter()
+        .find_map(operation_name)
+        .filter(|name| *name == "run")
+        .map(ToString::to_string)
+        .or_else(|| {
+            ops.first()
+                .and_then(operation_name)
+                .map(ToString::to_string)
+        })
+}
+
+fn operation_name(value: &TypedOperation) -> Option<&str> {
+    value.id.as_deref().or(value.name.as_deref())
+}
+
+fn canonicalize_json(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut ordered = serde_json::Map::new();
+            let mut keys = map.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            for key in keys {
+                let normalized = map
+                    .get(&key)
+                    .cloned()
+                    .map(canonicalize_json)
+                    .unwrap_or(Value::Null);
+                ordered.insert(key, normalized);
+            }
+            Value::Object(ordered)
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(canonicalize_json).collect()),
+        other => other,
+    }
+}
+
+fn parse_typed_describe_from_value(value: Value, source: &str) -> Result<TypedDescribe> {
+    let normalized = canonicalize_json(value);
+    let mut typed: TypedDescribe = serde_json::from_value(normalized)
+        .with_context(|| format!("failed to decode {source} as typed describe payload"))?;
+    typed.config_schema = canonicalize_json(typed.config_schema);
+    for op in &mut typed.operations {
+        op.input.schema = canonicalize_json(op.input.schema.clone());
+        op.output.schema = canonicalize_json(op.output.schema.clone());
+        op.input_schema = op.input_schema.clone().map(canonicalize_json);
+        op.output_schema = op.output_schema.clone().map(canonicalize_json);
+    }
+    Ok(typed)
+}
+
+fn canonical_describe_value(describe: &TypedDescribe) -> Result<Value> {
+    Ok(canonicalize_json(serde_json::to_value(describe)?))
+}
+
+fn describe_hash(describe: &TypedDescribe) -> Result<String> {
+    let canonical = canonical_describe_value(describe)?;
+    let describe_material = ContractDescribeHashMaterial {
+        describe: &canonical,
+    };
+    Ok(sha256_prefixed(&serde_cbor::to_vec(&describe_material)?))
+}
+
+impl TypedOperation {
+    fn input_schema_value(&self) -> Value {
+        if !self.input.schema.is_null() {
+            return self.input.schema.clone();
+        }
+        self.input_schema.clone().unwrap_or(Value::Null)
+    }
+
+    fn output_schema_value(&self) -> Value {
+        if !self.output.schema.is_null() {
+            return self.output.schema.clone();
+        }
+        self.output_schema.clone().unwrap_or(Value::Null)
+    }
+}
+
+fn sha256_prefixed(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    format!("sha256:{:x}", digest)
+}
+
+fn normalize_operation_id(value: &str) -> String {
+    let op = value.trim();
+    if op.is_empty() {
+        "run".to_string()
+    } else {
+        op.to_string()
     }
 }

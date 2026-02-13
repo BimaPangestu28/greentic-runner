@@ -21,6 +21,7 @@ use crate::engine::runtime::StateMachineRuntime;
 use crate::operator_metrics::OperatorMetrics;
 use crate::operator_registry::OperatorRegistry;
 use crate::pack::{ComponentResolution, PackRuntime};
+use crate::runner::contract_cache::{ContractCache, ContractCacheStats};
 use crate::runner::engine::FlowEngine;
 use crate::runner::mocks::MockLayer;
 use crate::secrets::{DynSecretsManager, read_secret_blocking};
@@ -90,6 +91,14 @@ pub struct TenantRuntime {
     secrets: DynSecretsManager,
     operator_registry: OperatorRegistry,
     operator_metrics: Arc<OperatorMetrics>,
+    contract_cache: ContractCache,
+}
+
+#[derive(Clone)]
+pub struct ResolvedComponent {
+    pub digest: String,
+    pub component_ref: String,
+    pub pack: Arc<PackRuntime>,
 }
 
 /// Block on a future whether or not we're already inside a tokio runtime.
@@ -236,6 +245,7 @@ impl TenantRuntime {
             secrets: secrets_manager,
             operator_registry,
             operator_metrics,
+            contract_cache: ContractCache::from_env(),
         }))
     }
 
@@ -253,6 +263,14 @@ impl TenantRuntime {
 
     pub fn operator_metrics(&self) -> &OperatorMetrics {
         &self.operator_metrics
+    }
+
+    pub fn contract_cache(&self) -> &ContractCache {
+        &self.contract_cache
+    }
+
+    pub fn contract_cache_stats(&self) -> ContractCacheStats {
+        self.contract_cache.stats()
     }
 
     pub fn main_pack(&self) -> &Arc<PackRuntime> {
@@ -342,6 +360,28 @@ impl TenantRuntime {
             .iter()
             .find(|pack| pack.contains_component(component_ref))
             .cloned()
+    }
+
+    pub fn pack_for_component_with_digest(
+        &self,
+        component_ref: &str,
+    ) -> Option<(Arc<PackRuntime>, Option<String>)> {
+        self.packs
+            .iter()
+            .zip(self.digests.iter())
+            .find(|(pack, _)| pack.contains_component(component_ref))
+            .map(|(pack, digest)| (Arc::clone(pack), digest.clone()))
+    }
+
+    pub fn resolve_component(&self, component_ref: &str) -> Option<ResolvedComponent> {
+        self.pack_for_component_with_digest(component_ref)
+            .map(|(pack, digest)| ResolvedComponent {
+                digest: digest
+                    .or_else(|| self.digest().map(ToString::to_string))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                component_ref: component_ref.to_string(),
+                pack,
+            })
     }
 }
 

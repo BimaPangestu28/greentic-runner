@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/greentic-i18n",
     "crates/greentic-runner",
     "crates/greentic-runner-host",
     "crates/greentic-runner-desktop",
@@ -13,12 +14,13 @@ exclude = [
     "tests/fixtures/runner-components",
     "tests/fixtures/wasi-p2-smoke",
     "tests/assets/provider-core-dummy",
+    "tests/assets/component-v0-6-dummy",
 ]
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.4.55"
+version = "0.4.56"
 
 [workspace.dependencies]
 arc-swap = "1"
@@ -41,6 +43,7 @@ greentic-interfaces-host = { version = "0.4" }
 greentic-interfaces-wasmtime = { version = "0.4" }
 greentic-config = "0.4"
 greentic-config-types = "0.4"
+greentic-i18n = { path = "crates/greentic-i18n", version = "0.4" }
 greentic-oauth-sdk = { version = "0.4"  }
 greentic-oauth-host = { version = "0.4" }
 greentic-runner-host = { path = "crates/greentic-runner-host", version = "0.4" }

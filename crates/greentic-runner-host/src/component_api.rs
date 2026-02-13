@@ -134,6 +134,23 @@ pub mod v0_5 {
     });
 }
 
+pub mod v0_6_descriptor {
+    wasmtime::component::bindgen!({
+        inline: r#"
+        package greentic:component@0.6.0;
+
+        interface component-descriptor {
+          describe: func() -> list<u8>;
+        }
+
+        world component-v0-v6-v0 {
+          export component-descriptor;
+        }
+        "#,
+        world: "component-v0-v6-v0",
+    });
+}
+
 pub mod node {
     pub type Json = String;
 

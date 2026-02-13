@@ -1952,6 +1952,125 @@ impl PackRuntime {
         &self.metadata
     }
 
+    pub fn component_manifest(&self, component_ref: &str) -> Option<&ComponentManifest> {
+        self.component_manifests.get(component_ref)
+    }
+
+    pub fn describe_component_contract_v0_6(&self, component_ref: &str) -> Result<Option<Value>> {
+        let pack_component = self
+            .components
+            .get(component_ref)
+            .with_context(|| format!("component '{component_ref}' not found in pack"))?;
+        let engine = self.engine.clone();
+        let config = Arc::clone(&self.config);
+        let http_client = Arc::clone(&self.http_client);
+        let mocks = self.mocks.clone();
+        let session_store = self.session_store.clone();
+        let state_store = self.state_store.clone();
+        let secrets = Arc::clone(&self.secrets);
+        let oauth_config = self.oauth_config.clone();
+        let wasi_policy = Arc::clone(&self.wasi_policy);
+        let pack_id = self.metadata().pack_id.clone();
+        let allow_state_store = self.allows_state_store(component_ref);
+        let component = pack_component.component.clone();
+        let component_ref_owned = component_ref.to_string();
+
+        run_on_wasi_thread("component.describe", move || {
+            let mut linker = Linker::new(&engine);
+            register_all(&mut linker, allow_state_store)?;
+            add_component_control_to_linker(&mut linker)?;
+
+            let host_state = HostState::new(
+                pack_id.clone(),
+                config,
+                http_client,
+                mocks,
+                session_store,
+                state_store,
+                secrets,
+                oauth_config,
+                None,
+                Some(component_ref_owned),
+                false,
+            )?;
+            let store_state = ComponentState::new(host_state, wasi_policy)?;
+            let mut store = wasmtime::Store::new(&engine, store_state);
+            let pre_instance = linker.instantiate_pre(&component)?;
+            let pre = match component_api::v0_6_descriptor::ComponentV0V6V0Pre::new(pre_instance) {
+                Ok(pre) => pre,
+                Err(_) => return Ok(None),
+            };
+            let bytes = block_on(async {
+                let bindings = pre.instantiate_async(&mut store).await?;
+                let descriptor = bindings.greentic_component_component_descriptor();
+                descriptor.call_describe(&mut store)
+            })?;
+
+            if bytes.is_empty() {
+                return Ok(Some(Value::Null));
+            }
+            if let Ok(value) = serde_cbor::from_slice::<Value>(&bytes) {
+                return Ok(Some(value));
+            }
+            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                return Ok(Some(value));
+            }
+            if let Ok(text) = String::from_utf8(bytes) {
+                if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                    return Ok(Some(value));
+                }
+                return Ok(Some(Value::String(text)));
+            }
+            Ok(Some(Value::Null))
+        })
+    }
+
+    pub fn load_schema_json(&self, schema_ref: &str) -> Result<Option<Value>> {
+        let rel = normalize_schema_ref(schema_ref)?;
+        if self.path.is_dir() {
+            let candidate = self.path.join(&rel);
+            if candidate.exists() {
+                let bytes = std::fs::read(&candidate).with_context(|| {
+                    format!("failed to read schema file {}", candidate.display())
+                })?;
+                let value = serde_json::from_slice::<Value>(&bytes)
+                    .with_context(|| format!("invalid schema JSON in {}", candidate.display()))?;
+                return Ok(Some(value));
+            }
+        }
+
+        if let Some(archive_path) = self
+            .archive_path
+            .as_ref()
+            .or_else(|| path_is_gtpack(&self.path).then_some(&self.path))
+        {
+            let file = File::open(archive_path)
+                .with_context(|| format!("failed to open {}", archive_path.display()))?;
+            let mut archive = ZipArchive::new(file)
+                .with_context(|| format!("failed to read pack {}", archive_path.display()))?;
+            match archive.by_name(&rel) {
+                Ok(mut entry) => {
+                    let mut bytes = Vec::new();
+                    entry.read_to_end(&mut bytes)?;
+                    let value = serde_json::from_slice::<Value>(&bytes).with_context(|| {
+                        format!("invalid schema JSON in {}:{}", archive_path.display(), rel)
+                    })?;
+                    Ok(Some(value))
+                }
+                Err(zip::result::ZipError::FileNotFound) => Ok(None),
+                Err(err) => Err(anyhow!(err)).with_context(|| {
+                    format!(
+                        "failed to read schema `{}` from {}",
+                        rel,
+                        archive_path.display()
+                    )
+                }),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn required_secrets(&self) -> &[greentic_types::SecretRequirement] {
         &self.metadata.secret_requirements
     }
@@ -2075,6 +2194,40 @@ impl PackRuntime {
             cache,
         })
     }
+}
+
+fn normalize_schema_ref(schema_ref: &str) -> Result<String> {
+    let candidate = schema_ref.trim();
+    if candidate.is_empty() {
+        bail!("schema ref cannot be empty");
+    }
+    let path = Path::new(candidate);
+    if path.is_absolute() {
+        bail!("schema ref must be relative: {}", schema_ref);
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            _ => bail!("schema ref must not contain traversal: {}", schema_ref),
+        }
+    }
+    let normalized = normalized
+        .to_str()
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow!("schema ref must be valid UTF-8"))?;
+    if normalized.is_empty() {
+        bail!("schema ref cannot normalize to empty path");
+    }
+    Ok(normalized)
+}
+
+fn path_is_gtpack(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("gtpack"))
+        .unwrap_or(false)
 }
 
 fn is_missing_node_export(err: &wasmtime::Error, version: &str) -> bool {
@@ -3718,6 +3871,7 @@ mod tests {
             tags: Vec::new(),
             schema_version: None,
             entrypoints: IndexMap::new(),
+            meta: None,
             nodes,
         };
 

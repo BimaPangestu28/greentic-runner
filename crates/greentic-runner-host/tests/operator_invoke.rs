@@ -54,6 +54,7 @@ async fn invoke_operator_api_returns_provider_output() -> Result<()> {
         flags: Vec::new(),
         op_version: None,
         schema_hash: None,
+        locale: None,
         payload: OperatorPayload {
             cbor_input: payload,
             attachments: Vec::new(),
@@ -72,6 +73,36 @@ async fn invoke_operator_api_returns_provider_output() -> Result<()> {
         .context("expected CBOR output for success")?;
     let value: Value = serde_cbor::from_slice(output)?;
     assert_eq!(value, json!({"message": "ping"}));
+    let stats = runtime.contract_cache_stats();
+    assert_eq!(stats.entries, 1);
+    assert_eq!(stats.misses, 1);
+    assert_eq!(stats.hits, 0);
+
+    let payload = serde_cbor::to_vec(&json!({"message": "ping"}))?;
+    let request = OperatorRequest {
+        tenant_id: Some("demo".into()),
+        provider_id: None,
+        provider_type: Some(PROVIDER_TYPE.to_string()),
+        pack_id: None,
+        op_id: PROVIDER_OP.to_string(),
+        trace_id: None,
+        correlation_id: None,
+        timeout: None,
+        flags: Vec::new(),
+        op_version: None,
+        schema_hash: None,
+        locale: None,
+        payload: OperatorPayload {
+            cbor_input: payload,
+            attachments: Vec::new(),
+        },
+    };
+    let response = invoke_operator(&runtime, request).await;
+    assert!(matches!(response.status, OperatorStatus::Ok));
+    let stats = runtime.contract_cache_stats();
+    assert_eq!(stats.entries, 1);
+    assert_eq!(stats.misses, 1);
+    assert_eq!(stats.hits, 1);
     Ok(())
 }
 
@@ -97,6 +128,7 @@ async fn invoke_operator_api_missing_operation_errors() -> Result<()> {
         flags: Vec::new(),
         op_version: None,
         schema_hash: None,
+        locale: None,
         payload: OperatorPayload {
             cbor_input: payload,
             attachments: Vec::new(),
@@ -107,7 +139,314 @@ async fn invoke_operator_api_missing_operation_errors() -> Result<()> {
     assert!(matches!(response.status, OperatorStatus::Error));
     let error = response.error.context("expected error response")?;
     assert!(matches!(error.code, OperatorErrorCode::OpNotFound));
+    let details = error
+        .details_cbor
+        .as_deref()
+        .context("expected deterministic diagnostics details")?;
+    let diagnostics: Vec<greentic_runner_host::runner::operator::Diagnostic> =
+        serde_cbor::from_slice(details)?;
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "op_not_found");
+    assert_eq!(diagnostics[0].path, "/op_id");
+    assert_eq!(diagnostics[0].message_key, "runner.operator.op_not_found");
+    assert_eq!(diagnostics[0].operation_id.as_deref(), Some("unknown"));
     assert!(response.cbor_output.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn invoke_operator_api_rejects_schema_hash_mismatch() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let config = minimal_config(workspace.path())?;
+    let pack_path = workspace.path().join("operator-provider.gtpack");
+    let component_path = build_provider_component()?;
+    build_provider_pack(&component_path, &pack_path)?;
+    let runtime = setup_runtime(&pack_path, Arc::clone(&config)).await?;
+
+    let payload = serde_cbor::to_vec(&json!({"message": "ping"}))?;
+    let request = OperatorRequest {
+        tenant_id: Some("demo".into()),
+        provider_id: None,
+        provider_type: Some(PROVIDER_TYPE.to_string()),
+        pack_id: None,
+        op_id: PROVIDER_OP.to_string(),
+        trace_id: None,
+        correlation_id: None,
+        timeout: None,
+        flags: Vec::new(),
+        op_version: None,
+        schema_hash: Some("sha256:deadbeef".to_string()),
+        locale: None,
+        payload: OperatorPayload {
+            cbor_input: payload,
+            attachments: Vec::new(),
+        },
+    };
+
+    let response = invoke_operator(&runtime, request).await;
+    assert!(matches!(response.status, OperatorStatus::Error));
+    let error = response.error.context("expected schema mismatch error")?;
+    assert!(matches!(error.code, OperatorErrorCode::TypeMismatch));
+    let details = error
+        .details_cbor
+        .as_deref()
+        .context("expected deterministic diagnostics details")?;
+    let diagnostics: Vec<greentic_runner_host::runner::operator::Diagnostic> =
+        serde_cbor::from_slice(details)?;
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "schema_hash_mismatch");
+    assert_eq!(diagnostics[0].path, "/schema_hash");
+    assert_eq!(
+        diagnostics[0].message_key,
+        "runner.operator.schema_hash_mismatch"
+    );
+    assert_eq!(diagnostics[0].operation_id.as_deref(), Some(PROVIDER_OP));
+    Ok(())
+}
+
+#[tokio::test]
+async fn invoke_operator_api_rejects_invalid_input_against_schema() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let config = minimal_config(workspace.path())?;
+    let pack_path = workspace.path().join("operator-provider.gtpack");
+    let component_path = build_provider_component()?;
+    build_provider_pack(&component_path, &pack_path)?;
+    let runtime = setup_runtime(&pack_path, Arc::clone(&config)).await?;
+
+    let payload = serde_cbor::to_vec(&json!({"message": 42}))?;
+    let request = OperatorRequest {
+        tenant_id: Some("demo".into()),
+        provider_id: None,
+        provider_type: Some(PROVIDER_TYPE.to_string()),
+        pack_id: None,
+        op_id: PROVIDER_OP.to_string(),
+        trace_id: None,
+        correlation_id: None,
+        timeout: None,
+        flags: Vec::new(),
+        op_version: None,
+        schema_hash: None,
+        locale: None,
+        payload: OperatorPayload {
+            cbor_input: payload,
+            attachments: Vec::new(),
+        },
+    };
+
+    let response = invoke_operator(&runtime, request).await;
+    assert!(matches!(response.status, OperatorStatus::Error));
+    let error = response.error.context("expected schema validation error")?;
+    assert!(matches!(error.code, OperatorErrorCode::TypeMismatch));
+    let details = error
+        .details_cbor
+        .as_deref()
+        .context("expected deterministic diagnostics details")?;
+    let diagnostics: Vec<greentic_runner_host::runner::operator::Diagnostic> =
+        serde_cbor::from_slice(details)?;
+    assert!(!diagnostics.is_empty());
+    assert_eq!(diagnostics[0].code, "schema_validation");
+    assert_eq!(
+        diagnostics[0].message_key,
+        "runner.schema.validation_failed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn invoke_operator_api_strict_rejects_unsupported_schema_constraints() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let config = minimal_config(workspace.path())?;
+    let pack_path = workspace
+        .path()
+        .join("operator-provider-unsupported.gtpack");
+    let component_path = build_provider_component()?;
+    build_provider_pack_with_schemas(
+        &component_path,
+        &pack_path,
+        r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string",
+      "pattern": "^[a-z]+$"
+    }
+  }
+}"#,
+        None,
+    )?;
+    let runtime = setup_runtime(&pack_path, Arc::clone(&config)).await?;
+
+    let payload = serde_cbor::to_vec(&json!({"message": "ping"}))?;
+    let request = OperatorRequest {
+        tenant_id: Some("demo".into()),
+        provider_id: None,
+        provider_type: Some(PROVIDER_TYPE.to_string()),
+        pack_id: None,
+        op_id: PROVIDER_OP.to_string(),
+        trace_id: None,
+        correlation_id: None,
+        timeout: None,
+        flags: Vec::new(),
+        op_version: None,
+        schema_hash: None,
+        locale: None,
+        payload: OperatorPayload {
+            cbor_input: payload,
+            attachments: Vec::new(),
+        },
+    };
+
+    let response = invoke_operator(&runtime, request).await;
+    assert!(matches!(response.status, OperatorStatus::Error));
+    let error = response
+        .error
+        .context("expected unsupported schema error")?;
+    assert!(matches!(error.code, OperatorErrorCode::TypeMismatch));
+    let details = error
+        .details_cbor
+        .as_deref()
+        .context("expected deterministic diagnostics details")?;
+    let diagnostics: Vec<greentic_runner_host::runner::operator::Diagnostic> =
+        serde_cbor::from_slice(details)?;
+    assert!(!diagnostics.is_empty());
+    assert_eq!(diagnostics[0].code, "unsupported_schema_constraint");
+    assert_eq!(
+        diagnostics[0].message_key,
+        "runner.schema.unsupported_constraint"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn invoke_operator_api_rejects_invalid_output_against_output_schema() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let config = minimal_config(workspace.path())?;
+    let pack_path = workspace
+        .path()
+        .join("operator-provider-output-schema.gtpack");
+    let component_path = build_provider_component()?;
+    build_provider_pack_with_schemas(
+        &component_path,
+        &pack_path,
+        r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["message"],
+  "properties": {
+    "message": { "type": "string" }
+  },
+  "additionalProperties": false
+}"#,
+        Some(
+            r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["result"],
+  "properties": {
+    "result": { "type": "string" }
+  },
+  "additionalProperties": false
+}"#,
+        ),
+    )?;
+    let runtime = setup_runtime(&pack_path, Arc::clone(&config)).await?;
+
+    let payload = serde_cbor::to_vec(&json!({"message": "ping"}))?;
+    let request = OperatorRequest {
+        tenant_id: Some("demo".into()),
+        provider_id: None,
+        provider_type: Some(PROVIDER_TYPE.to_string()),
+        pack_id: None,
+        op_id: PROVIDER_OP.to_string(),
+        trace_id: None,
+        correlation_id: None,
+        timeout: None,
+        flags: Vec::new(),
+        op_version: None,
+        schema_hash: None,
+        locale: None,
+        payload: OperatorPayload {
+            cbor_input: payload,
+            attachments: Vec::new(),
+        },
+    };
+
+    let response = invoke_operator(&runtime, request).await;
+    assert!(matches!(response.status, OperatorStatus::Error));
+    let error = response
+        .error
+        .context("expected output schema validation error")?;
+    assert!(matches!(error.code, OperatorErrorCode::TypeMismatch));
+    let details = error
+        .details_cbor
+        .as_deref()
+        .context("expected deterministic diagnostics details")?;
+    let diagnostics: Vec<greentic_runner_host::runner::operator::Diagnostic> =
+        serde_cbor::from_slice(details)?;
+    assert!(!diagnostics.is_empty());
+    assert_eq!(diagnostics[0].code, "schema_validation");
+    assert_eq!(diagnostics[0].path, "/output");
+    Ok(())
+}
+
+#[tokio::test]
+async fn invoke_operator_api_skip_output_validate_bypasses_output_schema_errors() -> Result<()> {
+    let workspace = TempDir::new()?;
+    let config = minimal_config(workspace.path())?;
+    let pack_path = workspace
+        .path()
+        .join("operator-provider-output-schema-skip.gtpack");
+    let component_path = build_provider_component()?;
+    build_provider_pack_with_schemas(
+        &component_path,
+        &pack_path,
+        r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["message"],
+  "properties": {
+    "message": { "type": "string" }
+  },
+  "additionalProperties": false
+}"#,
+        Some(
+            r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["result"],
+  "properties": {
+    "result": { "type": "string" }
+  },
+  "additionalProperties": false
+}"#,
+        ),
+    )?;
+    let runtime = setup_runtime(&pack_path, Arc::clone(&config)).await?;
+
+    let payload = serde_cbor::to_vec(&json!({"message": "ping"}))?;
+    let request = OperatorRequest {
+        tenant_id: Some("demo".into()),
+        provider_id: None,
+        provider_type: Some(PROVIDER_TYPE.to_string()),
+        pack_id: None,
+        op_id: PROVIDER_OP.to_string(),
+        trace_id: None,
+        correlation_id: None,
+        timeout: None,
+        flags: vec!["skip-output-validate".to_string()],
+        op_version: None,
+        schema_hash: None,
+        locale: None,
+        payload: OperatorPayload {
+            cbor_input: payload,
+            attachments: Vec::new(),
+        },
+    };
+
+    let response = invoke_operator(&runtime, request).await;
+    assert!(matches!(response.status, OperatorStatus::Ok));
+    assert!(response.error.is_none());
     Ok(())
 }
 
@@ -155,6 +494,28 @@ async fn setup_runtime(pack_path: &Path, config: Arc<HostConfig>) -> Result<Arc<
 }
 
 fn build_provider_pack(component_path: &Path, pack_path: &Path) -> Result<()> {
+    build_provider_pack_with_schemas(
+        component_path,
+        pack_path,
+        r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["message"],
+  "properties": {
+    "message": { "type": "string" }
+  },
+  "additionalProperties": false
+}"#,
+        None,
+    )
+}
+
+fn build_provider_pack_with_schemas(
+    component_path: &Path,
+    pack_path: &Path,
+    config_schema_json: &str,
+    output_schema_json: Option<&str>,
+) -> Result<()> {
     let mut extensions = BTreeMap::new();
     let inline = ProviderExtensionInline {
         providers: vec![ProviderDecl {
@@ -224,6 +585,24 @@ fn build_provider_pack(component_path: &Path, pack_path: &Path) -> Result<()> {
     let mut component_file =
         File::open(component_path).with_context(|| format!("Open {:?}", component_path))?;
     copy(&mut component_file, &mut writer)?;
+
+    writer.start_file("schemas/config.schema.json", options)?;
+    writer.write_all(config_schema_json.as_bytes())?;
+    if let Some(output_schema) = output_schema_json {
+        writer.start_file("schemas/output.schema.json", options)?;
+        writer.write_all(output_schema.as_bytes())?;
+    }
+    writer.start_file("schemas/state.schema.json", options)?;
+    writer.write_all(
+        br#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "cursor": { "type": "string" }
+  },
+  "additionalProperties": true
+}"#,
+    )?;
     writer.finish().context("finalise provider pack")?;
     Ok(())
 }
