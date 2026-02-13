@@ -166,15 +166,56 @@ nodes:
     writer.start_file("manifest.cbor", options)?;
     writer.write_all(&manifest_bytes)?;
 
-    let wasm_path = fixture_path(
-        "tests/fixtures/runner-components/target-test/wasm32-wasip2/release/state_store_component.wasm",
-    );
+    let wasm_path = ensure_state_store_component_wasm()?;
     writer.start_file("components/state.store.wasm", options)?;
     let mut file = fs::File::open(&wasm_path as &Path)
         .with_context(|| format!("open component {}", wasm_path.display()))?;
     io::copy(&mut file, &mut writer)?;
     writer.finish().context("finalise conformance pack")?;
     Ok(())
+}
+
+fn ensure_state_store_component_wasm() -> Result<PathBuf> {
+    let wasm_path = fixture_path(
+        "tests/fixtures/runner-components/target-test/wasm32-wasip2/release/state_store_component.wasm",
+    );
+    if wasm_path.exists() {
+        return Ok(wasm_path);
+    }
+
+    let workspace_manifest = fixture_path("tests/fixtures/runner-components/Cargo.toml");
+    let target_dir = fixture_path("tests/fixtures/runner-components/target-test");
+    let offline = env::var("CARGO_NET_OFFLINE").ok();
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("--release")
+        .arg("--target")
+        .arg("wasm32-wasip2")
+        .arg("--package")
+        .arg("state_store_component")
+        .arg("--manifest-path")
+        .arg(&workspace_manifest)
+        .arg("--target-dir")
+        .arg(&target_dir);
+    if matches!(offline.as_deref(), Some("true")) {
+        cmd.arg("--offline");
+    }
+    if let Some(val) = &offline {
+        cmd.env("CARGO_NET_OFFLINE", val);
+    }
+    let status = cmd
+        .status()
+        .with_context(|| format!("build {}", workspace_manifest.display()))?;
+    if !status.success() {
+        anyhow::bail!("failed to build state_store_component fixture");
+    }
+    if !wasm_path.exists() {
+        anyhow::bail!(
+            "state_store_component wasm missing after build: {}",
+            wasm_path.display()
+        );
+    }
+    Ok(wasm_path)
 }
 
 fn fixture_path(relative: &str) -> PathBuf {
