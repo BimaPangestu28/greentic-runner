@@ -1086,6 +1086,7 @@ fn build_exec_ctx(
         team: None,
         user: None,
         trace_id: request.trace_id.clone(),
+        i18n_id: None,
         correlation_id: request.correlation_id.clone(),
         deadline_unix_ms,
         attempt: 1,
@@ -1094,6 +1095,7 @@ fn build_exec_ctx(
 
     ComponentExecCtx {
         tenant: tenant_ctx,
+        i18n_id: None,
         flow_id: format!("operator/{operation_id}"),
         node_id: None,
     }
