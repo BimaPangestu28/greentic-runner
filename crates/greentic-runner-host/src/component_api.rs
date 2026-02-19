@@ -11,19 +11,36 @@ pub mod v0_4 {
         interface node {
           type json = string;
 
+          record impersonation {
+            actor-id: string,
+            reason: option<string>,
+          }
+
           record tenant-ctx {
+            env: string,
             tenant: string,
+            tenant-id: string,
             team: option<string>,
+            team-id: option<string>,
             user: option<string>,
+            user-id: option<string>,
             trace-id: option<string>,
+            i18n-id: option<string>,
             correlation-id: option<string>,
-            deadline-unix-ms: option<u64>,
+            attributes: list<tuple<string, string>>,
+            session-id: option<string>,
+            flow-id: option<string>,
+            node-id: option<string>,
+            provider-id: option<string>,
+            deadline-ms: option<s64>,
             attempt: u32,
             idempotency-key: option<string>,
+            impersonation: option<impersonation>,
           }
 
           record exec-ctx {
             tenant: tenant-ctx,
+            i18n-id: option<string>,
             flow-id: string,
             node-id: option<string>,
           }
@@ -79,19 +96,36 @@ pub mod v0_5 {
         interface node {
           type json = string;
 
+          record impersonation {
+            actor-id: string,
+            reason: option<string>,
+          }
+
           record tenant-ctx {
+            env: string,
             tenant: string,
+            tenant-id: string,
             team: option<string>,
+            team-id: option<string>,
             user: option<string>,
+            user-id: option<string>,
             trace-id: option<string>,
+            i18n-id: option<string>,
             correlation-id: option<string>,
-            deadline-unix-ms: option<u64>,
+            attributes: list<tuple<string, string>>,
+            session-id: option<string>,
+            flow-id: option<string>,
+            node-id: option<string>,
+            provider-id: option<string>,
+            deadline-ms: option<s64>,
             attempt: u32,
             idempotency-key: option<string>,
+            impersonation: option<impersonation>,
           }
 
           record exec-ctx {
             tenant: tenant-ctx,
+            i18n-id: option<string>,
             flow-id: string,
             node-id: option<string>,
           }
@@ -160,6 +194,7 @@ pub mod node {
         pub team: Option<String>,
         pub user: Option<String>,
         pub trace_id: Option<String>,
+        pub i18n_id: Option<String>,
         pub correlation_id: Option<String>,
         pub deadline_unix_ms: Option<u64>,
         pub attempt: u32,
@@ -169,6 +204,7 @@ pub mod node {
     #[derive(Clone, Debug)]
     pub struct ExecCtx {
         pub tenant: TenantCtx,
+        pub i18n_id: Option<String>,
         pub flow_id: String,
         pub node_id: Option<String>,
     }
@@ -190,34 +226,72 @@ pub mod node {
 }
 
 pub fn exec_ctx_v0_4(ctx: &node::ExecCtx) -> v0_4::exports::greentic::component::node::ExecCtx {
+    let env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
+    let team_id = ctx.tenant.team.clone();
+    let user_id = ctx.tenant.user.clone();
+    let deadline_ms = ctx
+        .tenant
+        .deadline_unix_ms
+        .and_then(|value| i64::try_from(value).ok());
     v0_4::exports::greentic::component::node::ExecCtx {
         tenant: v0_4::exports::greentic::component::node::TenantCtx {
+            env,
             tenant: ctx.tenant.tenant.clone(),
+            tenant_id: ctx.tenant.tenant.clone(),
             team: ctx.tenant.team.clone(),
+            team_id,
             user: ctx.tenant.user.clone(),
+            user_id,
             trace_id: ctx.tenant.trace_id.clone(),
+            i18n_id: ctx.tenant.i18n_id.clone(),
             correlation_id: ctx.tenant.correlation_id.clone(),
-            deadline_unix_ms: ctx.tenant.deadline_unix_ms,
+            attributes: Vec::new(),
+            session_id: ctx.tenant.correlation_id.clone(),
+            flow_id: Some(ctx.flow_id.clone()),
+            node_id: ctx.node_id.clone(),
+            provider_id: None,
+            deadline_ms,
             attempt: ctx.tenant.attempt,
             idempotency_key: ctx.tenant.idempotency_key.clone(),
+            impersonation: None,
         },
+        i18n_id: ctx.i18n_id.clone(),
         flow_id: ctx.flow_id.clone(),
         node_id: ctx.node_id.clone(),
     }
 }
 
 pub fn exec_ctx_v0_5(ctx: &node::ExecCtx) -> v0_5::exports::greentic::component::node::ExecCtx {
+    let env = std::env::var("GREENTIC_ENV").unwrap_or_else(|_| "local".to_string());
+    let team_id = ctx.tenant.team.clone();
+    let user_id = ctx.tenant.user.clone();
+    let deadline_ms = ctx
+        .tenant
+        .deadline_unix_ms
+        .and_then(|value| i64::try_from(value).ok());
     v0_5::exports::greentic::component::node::ExecCtx {
         tenant: v0_5::exports::greentic::component::node::TenantCtx {
+            env,
             tenant: ctx.tenant.tenant.clone(),
+            tenant_id: ctx.tenant.tenant.clone(),
             team: ctx.tenant.team.clone(),
+            team_id,
             user: ctx.tenant.user.clone(),
+            user_id,
             trace_id: ctx.tenant.trace_id.clone(),
+            i18n_id: ctx.tenant.i18n_id.clone(),
             correlation_id: ctx.tenant.correlation_id.clone(),
-            deadline_unix_ms: ctx.tenant.deadline_unix_ms,
+            attributes: Vec::new(),
+            session_id: ctx.tenant.correlation_id.clone(),
+            flow_id: Some(ctx.flow_id.clone()),
+            node_id: ctx.node_id.clone(),
+            provider_id: None,
+            deadline_ms,
             attempt: ctx.tenant.attempt,
             idempotency_key: ctx.tenant.idempotency_key.clone(),
+            impersonation: None,
         },
+        i18n_id: ctx.i18n_id.clone(),
         flow_id: ctx.flow_id.clone(),
         node_id: ctx.node_id.clone(),
     }

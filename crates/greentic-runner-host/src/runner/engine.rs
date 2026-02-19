@@ -1175,11 +1175,13 @@ fn component_exec_ctx(ctx: &FlowContext<'_>, node_id: &str) -> ComponentExecCtx 
             team: None,
             user: ctx.provider_id.map(str::to_string),
             trace_id: None,
+            i18n_id: None,
             correlation_id: ctx.session_id.map(str::to_string),
             deadline_unix_ms: None,
             attempt: ctx.attempt,
             idempotency_key: ctx.session_id.map(str::to_string),
         },
+        i18n_id: None,
         flow_id: ctx.flow_id.to_string(),
         node_id: Some(node_id.to_string()),
     }

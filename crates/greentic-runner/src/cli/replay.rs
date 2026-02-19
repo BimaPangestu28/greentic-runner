@@ -251,11 +251,13 @@ fn component_exec_ctx(trace: &TraceEnvelope, node_id: &str) -> ComponentExecCtx 
             team: None,
             user: None,
             trace_id: None,
+            i18n_id: None,
             correlation_id: None,
             deadline_unix_ms: None,
             attempt: 1,
             idempotency_key: None,
         },
+        i18n_id: None,
         flow_id: trace.flow.id.clone(),
         node_id: Some(node_id.to_string()),
     }
