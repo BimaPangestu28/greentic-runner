@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT
+// Legacy fixture note: this fixture intentionally targets greentic:component@0.4.0
+// for compatibility coverage. Canonical runtime guidance is documented under
+// docs/vision/canonical-v0.6.md.
 package fixtures:state-store-component@0.1.0;
 
 use greentic:component/control@0.4.0;

@@ -1,5 +1,7 @@
 # Runner / Host Inventory
 
+> Legacy reference: this is a historical inventory snapshot. For canonical v0.6 guidance, start with `docs/vision/canonical-v0.6.md`. For compatibility notes, see `docs/vision/legacy.md`.
+
 This document captures the current runtime surface inside the `greentic-runner`
 workspace so we can verify that no capabilities disappear while unifying the
 host. It enumerates every crate that participates in pack execution, the entry

@@ -1,5 +1,7 @@
 # greentic-runner – Current Behaviour (Snapshot)
 
+> Legacy reference: this snapshot is retained for historical context. For canonical v0.6 guidance, use `docs/vision/canonical-v0.6.md`. For legacy compatibility pointers, use `docs/vision/legacy.md`.
+
 ## 1. Flow model and node types
 - Flow representation: pack flows are stored as `greentic_flow::ir::FlowIR` (see `greentic-flow` crate) with nodes keyed by string IDs. The runner loads `FlowIR` from packs (`crates/greentic-runner-host/src/pack.rs` → `PackRuntime::load_flow_ir`) and executes them in `FlowEngine` (`crates/greentic-runner-host/src/runner/engine.rs`).
 - Node dispatch is hard-coded in `FlowEngine::dispatch_node`:

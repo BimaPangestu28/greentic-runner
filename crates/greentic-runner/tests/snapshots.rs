@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
+use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
 use std::sync::{
     Arc, Mutex,
@@ -156,9 +158,7 @@ struct ComponentFixture {
 
 fn qa_process_fixture() -> Result<ComponentFixture> {
     let id = "qa.process";
-    let wasm_path = fixture_path(
-        "tests/fixtures/runner-components/target-test/wasm32-wasip2/release/qa_process.wasm",
-    );
+    let wasm_path = ensure_runner_component_wasm("qa_process", "qa_process.wasm")?;
     let manifest = ComponentManifest {
         id: ComponentId::from_str(id)?,
         version: Version::parse("0.1.0")?,
@@ -181,9 +181,8 @@ fn qa_process_fixture() -> Result<ComponentFixture> {
 
 fn state_store_fixture() -> Result<ComponentFixture> {
     let id = "state.store";
-    let wasm_path = fixture_path(
-        "tests/fixtures/runner-components/target-test/wasm32-wasip2/release/state_store_component.wasm",
-    );
+    let wasm_path =
+        ensure_runner_component_wasm("state_store_component", "state_store_component.wasm")?;
     let manifest = ComponentManifest {
         id: ComponentId::from_str(id)?,
         version: Version::parse("0.1.0")?,
@@ -218,6 +217,53 @@ fn fixture_path(relative: &str) -> PathBuf {
         .join("..")
         .join("..")
         .join(relative)
+}
+
+fn ensure_runner_component_wasm(package: &str, file_name: &str) -> Result<PathBuf> {
+    let fixtures_root = fixture_path("tests/fixtures/runner-components");
+    let wasm_path = fixtures_root
+        .join("target-test")
+        .join("wasm32-wasip2")
+        .join("release")
+        .join(file_name);
+    if wasm_path.exists() {
+        return Ok(wasm_path);
+    }
+
+    let workspace_manifest = fixtures_root.join("Cargo.toml");
+    let target_dir = fixtures_root.join("target-test");
+    let offline = env::var("CARGO_NET_OFFLINE").ok();
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("--release")
+        .arg("--target")
+        .arg("wasm32-wasip2")
+        .arg("--package")
+        .arg(package)
+        .arg("--manifest-path")
+        .arg(&workspace_manifest)
+        .arg("--target-dir")
+        .arg(&target_dir);
+    if matches!(offline.as_deref(), Some("true")) {
+        cmd.arg("--offline");
+    }
+    if let Some(val) = &offline {
+        cmd.env("CARGO_NET_OFFLINE", val);
+    }
+
+    let status = cmd
+        .status()
+        .with_context(|| format!("build {}", workspace_manifest.display()))?;
+    if !status.success() {
+        anyhow::bail!("failed to build {package} fixture");
+    }
+    if !wasm_path.exists() {
+        anyhow::bail!(
+            "{file_name} missing after fixture build: {}",
+            wasm_path.display()
+        );
+    }
+    Ok(wasm_path)
 }
 
 fn repo_root() -> PathBuf {

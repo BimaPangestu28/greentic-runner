@@ -1,5 +1,7 @@
 # Component state + previous payload access (Greentic runner)
 
+> Legacy duplicate: this note is kept for compatibility with older links. Use `docs/component_payload_and_state.md` and `docs/vision/canonical-v0.6.md` as the canonical docs.
+
 ## State CRUD from a component
 Components do not receive state in their input JSON. They read/write/delete via the host `greentic:state/store@1.0.0` interface that the runner wires into the Wasm linker.
 

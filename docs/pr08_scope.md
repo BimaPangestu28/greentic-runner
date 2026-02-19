@@ -1,5 +1,7 @@
 ## PR-08 Scope Discovery
 
+> Legacy planning note: this document captures historical scope analysis. For canonical v0.6 runtime guidance, use `docs/vision/canonical-v0.6.md`; for legacy mappings, use `docs/vision/legacy.md`.
+
 ### Runtime execution paths
 - Messaging ingress + send: `crates/greentic-runner-host/src/runner/adapt_messaging.rs::telegram_webhook` (uses `send_telegram_message` for outbound), Slack `adapt_slack.rs::{events,interactive}`, Webchat `adapt_webchat.rs::activities`, Webex `adapt_webex.rs::webhook`, Teams `adapt_teams.rs::activities`, WhatsApp `adapt_whatsapp.rs::webhook` (verify helper).
 - Secrets reads: `crates/greentic-runner-host/src/runtime.rs::get_secret` (wraps secrets manager with policy), plus `secrets` helpers (env backend) used by host bootstrap.

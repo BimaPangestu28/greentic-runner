@@ -36,9 +36,11 @@ use greentic_interfaces_wasmtime::host_helpers::v1::{
         TenantCtx as TelemetryTenantCtx,
     },
 };
-use greentic_interfaces_wasmtime::http_client_client_v1_0::greentic::interfaces_types::types::Impersonation as ImpersonationV1_0;
 use greentic_interfaces_wasmtime::http_client_client_v1_1::greentic::http::http_client as http_client_client_alias;
-use greentic_interfaces_wasmtime::http_client_client_v1_1::greentic::interfaces_types::types::Impersonation as ImpersonationV1_1;
+use greentic_interfaces_wasmtime::{
+    http_client_client_v1_0::greentic::interfaces_types::types as http_types_v1_0,
+    http_client_client_v1_1::greentic::interfaces_types::types as http_types_v1_1,
+};
 use greentic_pack::builder as legacy_pack;
 use greentic_types::flow::FlowHasher;
 use greentic_types::{
@@ -724,12 +726,10 @@ impl HttpClientHostV1_1 for HostState {
             deadline_ms: ctx.deadline_ms,
             attempt: ctx.attempt,
             idempotency_key: ctx.idempotency_key,
-            impersonation: ctx
-                .impersonation
-                .map(|ImpersonationV1_1 { actor_id, reason }| ImpersonationV1_0 {
-                    actor_id,
-                    reason,
-                }),
+            impersonation: ctx.impersonation.map(|imp| http_types_v1_0::Impersonation {
+                actor_id: imp.actor_id,
+                reason: imp.reason,
+            }),
         });
 
         self.send_http_request(legacy_req, opts, legacy_ctx)
@@ -1288,7 +1288,7 @@ fn alias_tenant_ctx_to_host(
         deadline_ms: ctx.deadline_ms,
         attempt: ctx.attempt,
         idempotency_key: ctx.idempotency_key,
-        impersonation: ctx.impersonation.map(|imp| ImpersonationV1_1 {
+        impersonation: ctx.impersonation.map(|imp| http_types_v1_1::Impersonation {
             actor_id: imp.actor_id,
             reason: imp.reason,
         }),

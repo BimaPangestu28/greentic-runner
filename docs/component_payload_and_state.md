@@ -59,4 +59,4 @@ If any condition fails, the interface is not linked and calls will fail at insta
 
 1) Use templating (`entry`/`prev`/`node`) for wiring data between nodes.
 2) Use `greentic:state/store@1.0.0` for persistent state.
-3) Do not rely on internal snapshot keys or legacy KV interfaces.
+3) Rely on documented host interfaces and flow templating only.

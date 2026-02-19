@@ -30,6 +30,12 @@ greentic-config. Every ingress payload (Telegram/WebChat/Slack/Webex/WhatsApp/
 webhook/timer) is normalized into the canonical schema with deterministic
 session keys so pause/resume + dedupe work the same way across providers.
 
+## Documentation
+
+- Docs index: `docs/README.md`
+- Canonical v0.6 guide: `docs/vision/canonical-v0.6.md`
+- Legacy guidance and replacements: `docs/vision/legacy.md`
+
 ## Public API
 
 The `greentic_runner` crate is the supported embedding surface:
@@ -182,7 +188,7 @@ cargo run -p greentic-runner --bin greentic-gen-bindings \
   --complete
 ```
 
-`--complete` fills safe defaults for env passthrough, network allowlists, secrets, and MCP server stubs; `--strict` additionally fails if HTTP/secrets/MCP requirements cannot be satisfied so pack authors can share hints via `bindings.hints.yaml` or `meta.bindings` annotations. Use `--pack-dir` for unpacked pack directories; `--component` inspects a compiled component.
+`--complete` fills safe defaults for env passthrough, network allowlists, and secrets; `--strict` additionally fails if HTTP/secrets requirements cannot be satisfied so pack authors can share hints via `bindings.hints.yaml` or `meta.bindings` annotations. Use `--pack-dir` for unpacked pack directories; `--component` inspects a compiled component.
 
 ## Repo settings
 
