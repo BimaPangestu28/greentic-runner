@@ -483,11 +483,13 @@ fn demo_exec_ctx(node_id: &str) -> greentic_runner_host::component_api::node::Ex
             team: None,
             user: None,
             trace_id: None,
+            i18n_id: None,
             correlation_id: None,
             deadline_unix_ms: None,
             attempt: 0,
             idempotency_key: None,
         },
+        i18n_id: None,
         flow_id: "demo.flow".into(),
         node_id: Some(node_id.into()),
     }
